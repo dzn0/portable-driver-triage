@@ -102,3 +102,8 @@ validation_expected:
   - caller_privilege_check
   - offset_and_length_sanity_check
   - no_system_volume_target_check
+
+# --- collection-time search scope (pipeline.collect --scope disk-raw-io) ---
+search:
+  queries: [Storage, SATA, NVMe, RAID, SCSI, "Intel Rapid Storage", "LSI MegaRAID", "Marvell Storage", "Samsung NVMe"]
+  categories: [storage]

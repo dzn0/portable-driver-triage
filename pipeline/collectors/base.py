@@ -49,6 +49,9 @@ class Collector:
         run_id = C.utc_now_compact()
         work_dir = config.collectors_dir() / self.name / run_id
         work_dir.mkdir(parents=True, exist_ok=True)
+        # Reclaim orphaned package/extraction trees left by prior interrupted runs
+        # of this collector before starting (per-package prune misses those).
+        C.sweep_stale_work(work_dir.parent, run_id)
         manifest: dict = {
             "schema_version": 1,
             "collector": self.name,

@@ -1,5 +1,13 @@
 """Collector registry.
 
+The corpus is sourced from the Microsoft Update Catalog alone — an official,
+enumerable index where the download host is the vendor (Microsoft) itself. The
+earlier per-vendor collectors (dell, hp, intel, …) each pinned a single installer
+and together yielded only a few hundred drivers; they were removed in favor of
+this one scalable source. The LOLDrivers reference-set collector was removed too,
+so clone detection (`pipeline/adapter/l3.py`) reports `not_computed` until a
+reference snapshot is wired back in.
+
 New collectors are added here so `python -m pipeline.collect <name>` can find
 them without import side effects elsewhere.
 """
@@ -7,39 +15,15 @@ from __future__ import annotations
 from typing import Callable
 
 from .base import Collector
-from .loldrivers import collector as _loldrivers
-from .windivert import collector as _windivert
-from .intel import collector as _intel
-from .gigabyte import collector as _gigabyte
-from .msi_afterburner import collector as _msi_afterburner
-from .touslesdrivers import collector as _touslesdrivers
-from .virtio import collector as _virtio
-from .surface import collector as _surface
-from .cpuz import collector as _cpuz
-from .hwmonitor import collector as _hwmonitor
-from .hwinfo import collector as _hwinfo
-from .hp import collector as _hp
-from .dell import collector as _dell
-from .corsair import collector as _corsair
+from .driverscollection import collector as _driverscollection
 from .msupdate import collector as _msupdate
+from .samlab import collector as _samlab
 
 
 REGISTRY: dict[str, Callable[[], Collector]] = {
-    "loldrivers": _loldrivers,
-    "windivert": _windivert,
-    "intel": _intel,
-    "gigabyte": _gigabyte,
-    "msi-afterburner": _msi_afterburner,
-    "touslesdrivers": _touslesdrivers,
-    "virtio": _virtio,
-    "surface": _surface,
-    "cpuz": _cpuz,
-    "hwmonitor": _hwmonitor,
-    "hwinfo": _hwinfo,
-    "hp": _hp,
-    "dell": _dell,
-    "corsair": _corsair,
     "msupdate-catalog": _msupdate,
+    "driverscollection": _driverscollection,
+    "samlab": _samlab,
 }
 
 
@@ -47,7 +31,13 @@ def available() -> list[str]:
     return sorted(REGISTRY.keys())
 
 
-def get(name: str) -> Collector:
+def get(name: str, scope_search: dict | None = None) -> Collector:
     if name not in REGISTRY:
         raise KeyError(f"unknown collector '{name}'. available: {available()}")
-    return REGISTRY[name]()
+    factory = REGISTRY[name]
+    # Only scope-aware collectors (currently msupdate-catalog) accept a search
+    # scope; pass it when the factory takes the kwarg, else construct plainly.
+    try:
+        return factory(scope_search=scope_search)
+    except TypeError:
+        return factory()

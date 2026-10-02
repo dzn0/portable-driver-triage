@@ -46,14 +46,24 @@ RUN apt-get update \
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONIOENCODING=utf-8
+    PYTHONIOENCODING=utf-8 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 COPY --from=builder /opt/venv /opt/venv
+
+# Headless Chromium for the Microsoft Update Catalog collector. `--with-deps`
+# pulls the OS libraries Chromium needs; the browser lands in
+# PLAYWRIGHT_BROWSERS_PATH (set above), which the collector reads. This is the
+# weight of the "Playwright in Docker" choice — only this collector uses it.
+RUN playwright install --with-deps chromium \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work
 COPY . /work
 
 # Fail the build early if the engine or any core dep is missing.
-RUN python -c "import capstone, pefile, cryptography, jinja2, yaml, angr; print('core deps OK')" \
+RUN python -c "import capstone, pefile, cryptography, jinja2, yaml, angr, playwright; print('core deps OK')" \
+ && python -c "from playwright.sync_api import sync_playwright; \
+import os; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop(); print('chromium OK')" \
  && python -m pipeline.collect --list >/dev/null && echo "pipeline imports OK"
 
 # `python -m` entrypoint: pass a module + args, e.g.

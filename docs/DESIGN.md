@@ -31,16 +31,46 @@ This project closes that gap. It locates candidate drivers via public indexes, d
   └──────────┘   └───────────┘   └──────────────┘   └──────────┘   └────────┘
 ```
 
-## Collection scope
+## Collection
+
+The corpus is sourced from a **single scalable source: the Microsoft Update
+Catalog** (`catalog.update.microsoft.com`). It is official, legal, and — crucially
+— the download host *is* the vendor (Microsoft), so it satisfies the "download
+always comes from the vendor's original URL" principle without a separate
+discovery/distribution split. The `msupdate-catalog` collector drives a headless
+Chromium (Playwright) to search, paginate, resolve each update's real download URL
+from the JS dialog, pull the CAB, and extract the drivers inside with 7-Zip.
+
+This replaces the project's earlier approach — ~14 per-vendor collectors (Dell, HP,
+Intel, GIGABYTE, …) that each pinned a single installer. Together they recovered
+only a few hundred drivers ("real products, buried in installers"), which did not
+scale. Those collectors, and the standalone LOLDrivers reference-set collector,
+were removed in favor of the catalog enumerator. Their installer-extraction
+machinery (MSI / NSIS / WiX-CAB / SFX / PE-resource) still lives in
+`pipeline/collectors/_common.py` and `base.py` for any future collector. The
+earlier per-vendor research is preserved in [`SOURCES.md`](SOURCES.md) as history.
+
+### Search scope vs. analysis scope
+
+A **scope** is one vocabulary applied at two points:
+
+- **Search scope** (`pipeline.collect --scope <name>`) narrows what the collector
+  looks for. A scope profile carries a `search:` block (catalog `queries` +
+  classification `categories`); `--scope` also accepts a free-text term used
+  directly as a catalog query (`--scope network`). With no scope, collection is a
+  broad sweep across device classes. Resolution lives in
+  [`pipeline/search_scope.py`](../pipeline/search_scope.py).
+- **Analysis scope** (`pipeline.analyze --scope <name>`) filters which collected
+  drivers go deep and enriches the AI handoff. (Unchanged.)
 
 **In scope**
-- Drivers that shipped in **real products** — not synthetic or random samples unlikely to be relevant.
-- Drivers **nested inside software installers** that carry `.sys` files as resources (direct extraction from MSI, NSIS, InnoSetup, InstallShield, WiX/CAB, SFX archives).
-- Public hardware-indexed catalogs (used only for discovery; downloads always come from the vendor's original URL).
+- Drivers that shipped in **real products** — WHQL / catalog-signed updates.
+- The full breadth of the catalog by default; a search scope narrows it on demand.
 
 **Out of scope**
 - Re-hosting large archives of unvetted driver binaries.
 - Executing drivers inside this pipeline. Dynamic analysis is explicitly a separate, isolated, opt-in step (see Safety model).
+- Aggregator catalogs that re-host binaries off the vendor's own hosts.
 
 ## Design pivot — engine reuse
 
@@ -56,7 +86,7 @@ The static analysis engine the layers below describe is **not implemented in thi
 
 Trying to reimplement any of that layer here would duplicate research-grade work that is already published and maintained. What the DrvEye output *does not* cover, and what this project owns end to end:
 
-1. **Where the drivers come from.** DrvEye assumes `*.sys` files are already on disk. This project's 34-source corpus (451 drivers, static-only extraction from MSI / NSIS / WiX Burn / InstallShield SFX / PE resources / Inno Setup) is the input layer DrvEye lacks. See [`SOURCES.md`](SOURCES.md).
+1. **Where the drivers come from.** DrvEye assumes `*.sys` files are already on disk. This project's Microsoft Update Catalog collector — enumerating the catalog and extracting the CAB payloads static-only — is the input layer DrvEye lacks. (An earlier 34-source, 451-driver per-vendor corpus was retired in favor of this one scalable source; see [Collection](#collection) and the historical [`SOURCES.md`](SOURCES.md).)
 2. **The AI-handoff contract.** DrvEye emits a terminal report and an optional JSON for a human analyst. This project emits a **per-driver bundle** structured for an AI to walk: a per-bundle `AGENTS.md` entry point, scope-filtered views, a `findings.json` with mandatory per-claim citations, and a corpus-wide `index.jsonl` so Mode C (mass triage) answers capability-level questions over the whole corpus without ever opening a bundle tree.
 3. **Scope profiles.** DrvEye reports *every* primitive and bug class it finds. This project narrows the universe up front via a declared scope (`arbitrary-physical-memory`, `msr-access`, `hid-input-control`, …) that both filters the output and enriches the AI prompt vocabulary.
 4. **Corpus-level dedup and provenance.** `(installer URL, installer SHA-256 at download time, extraction path)` is recorded for every binary, so a finding can always be traced back to the exact vendor source — not an input DrvEye tracks on its own.

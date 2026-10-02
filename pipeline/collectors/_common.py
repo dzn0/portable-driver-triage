@@ -11,6 +11,7 @@ Design invariants:
 from __future__ import annotations
 import hashlib
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -92,18 +93,37 @@ def download(
     allowed_hosts: list[str],
     max_mb: int = 1500,
     timeout: int = 90,
+    referer: str | None = None,
+    opener=None,
 ) -> dict:
-    """Download `url` to `target`. Returns a provenance dict."""
+    """Download `url` to `target`. Returns a provenance dict.
+
+    `referer`, when given, is sent as the `Referer` header on both the urllib
+    attempt and the curl fallback. Some download hosts (e.g. an aggregator's
+    file CDN that hands out a tokenized URL from a landing page) gate the file
+    on the originating page; passing the landing URL as referer satisfies that
+    without a real browser.
+
+    `opener`, when given, is a urllib `OpenerDirector` used in place of the
+    module default for the primary attempt — e.g. one carrying a cookie jar, so
+    a file whose CDN checks the session cookie set during the landing POST is
+    fetched with that session. The curl fallback has no cookies and will fail
+    for such a host; that is fine, since the opener path is the one expected to
+    succeed."""
     if urlparse(url).scheme != "https":
         raise ValueError("HTTPS required")
     _host_allowed(url, allowed_hosts)
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(target.suffix + ".part")
 
+    headers = {"User-Agent": UA}
+    if referer:
+        headers["Referer"] = referer
+    _open = opener.open if opener is not None else urlopen
     fname = Path(urlparse(url).path).name or "download"
     try:
-        req = Request(url, headers={"User-Agent": UA})
-        with urlopen(req, timeout=timeout) as r:
+        req = Request(url, headers=headers)
+        with _open(req, timeout=timeout) as r:
             _host_allowed(r.geturl(), allowed_hosts)
             final_url = r.geturl()
             clen = (r.headers.get("Content-Length") or "").strip()
@@ -137,6 +157,7 @@ def download(
             "--max-time", str(max(90, timeout * 3)),
             "--max-filesize", str(max_mb * (1 << 20)),
             "--user-agent", UA,
+            *(["--referer", referer] if referer else []),
             "--output", str(partial),
             "--write-out", "%{url_effective}",
             url,
@@ -164,6 +185,56 @@ def download(
         "sha256": sha256_file(target),
         "downloaded_at": utc_now(),
     }
+
+
+def prune_dir(path: Path) -> None:
+    """Delete a collector's per-package working tree once its drivers have been
+    copied into the content-addressed `drivers_dir`.
+
+    The downloaded installer/archive and its extraction tree are disposable: the
+    only durable output is the deduped `.sys` in `drivers_dir`, and all
+    provenance (URLs, sizes, sha256) is already captured in the manifest. Keeping
+    the raw packages wastes tens of GB for a handful of recovered drivers, so
+    collectors prune after each package by default. Set `PDT_KEEP_PACKAGES=1` to
+    retain them for debugging. Best-effort: a failure here never fails the run."""
+    if os.environ.get("PDT_KEEP_PACKAGES", "") not in ("", "0", "false"):
+        return
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def sweep_stale_work(collector_dir: Path, keep_run_id: str, min_age_s: int = 600) -> None:
+    """Remove orphaned `packages/`/`extracted/` trees from this collector's prior
+    runs.
+
+    Per-package prune (`prune_dir`) runs only after a package is harvested, so a
+    run that is interrupted (Ctrl-C, container kill, crash) before that leaves its
+    in-flight package + extraction tree behind — over many interrupted runs these
+    orphans accumulate to gigabytes. Each run sweeps them at startup.
+
+    Safety: never touches the current run (`keep_run_id`), and skips any sibling
+    touched within `min_age_s` so a concurrently-running instance of the same
+    collector is left alone. Honors `PDT_KEEP_PACKAGES=1`. Best-effort."""
+    if os.environ.get("PDT_KEEP_PACKAGES", "") not in ("", "0", "false"):
+        return
+    if not collector_dir.is_dir():
+        return
+    now = time.time()
+    for run in collector_dir.iterdir():
+        if not run.is_dir() or run.name == keep_run_id:
+            continue
+        for sub in ("packages", "extracted"):
+            d = run / sub
+            if not d.is_dir():
+                continue
+            try:
+                if now - d.stat().st_mtime < min_age_s:
+                    continue  # likely an active concurrent run — leave it
+                shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                pass
 
 
 def extract(package: Path, destination: Path, timeout: int = 240) -> dict:
@@ -254,24 +325,57 @@ def pe_identity(path: Path) -> dict | None:
         return None
 
 
-def verify_signature(path: Path) -> dict:
-    """Run signtool /kp if available. Never fails the overall collection."""
+def verify_signature(path: Path, catalogs: list[Path] | None = None) -> dict:
+    """Verify a driver's Authenticode signature with signtool, best-effort.
+
+    Tries the embedded signature first (`signtool verify /kp`), then — if any
+    `catalogs` are supplied — each detached catalog in turn (`/kp /c <cat>`).
+    The second path is essential for Microsoft Update Catalog drivers, which are
+    almost always *catalog-signed* (the `.sys` carries no embedded signature; the
+    trust lives in a sibling `.cat`). Returns on the first accepted result.
+
+    Never fails the overall collection:
+      - signtool absent (e.g. the Linux container, which has no SignTool) →
+        `{"accepted": None, "reason": "signtool not installed"}`. Signing policy
+        is then left to the L0 gate / DrvEye's downstream Authenticode, exactly
+        as for every other collector.
+      - signtool present but no signature validates → `{"accepted": False, ...}`,
+        recorded as provenance, not treated as a hard gate here.
+    """
     tool = config.signtool()
     if not tool:
         return {"accepted": None, "reason": "signtool not installed"}
-    try:
-        r = subprocess.run(
-            [str(tool), "verify", "/kp", "/v", str(path)],
-            capture_output=True, text=True, errors="replace",
-            timeout=60, creationflags=CREATE_NO_WINDOW,
-        )
-        return {
-            "accepted": r.returncode == 0,
+    attempts: list[dict] = []
+    # None = embedded attempt; then one attempt per detached catalog.
+    for catalog in [None, *(catalogs or [])]:
+        cmd = [str(tool), "verify", "/kp", "/v"]
+        if catalog is not None:
+            cmd += ["/c", str(catalog)]
+        cmd.append(str(path))
+        try:
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, errors="replace",
+                timeout=60, creationflags=CREATE_NO_WINDOW,
+            )
+        except Exception as e:
+            attempts.append({"method": "catalog" if catalog else "embedded",
+                             "catalog": str(catalog) if catalog else None,
+                             "error": str(e)})
+            continue
+        attempts.append({
+            "method": "catalog" if catalog else "embedded",
+            "catalog": str(catalog) if catalog else None,
             "exit_code": r.returncode,
             "output_tail": (r.stdout + r.stderr)[-4000:],
-        }
-    except Exception as e:
-        return {"accepted": None, "error": str(e)}
+        })
+        # signtool: 0 = ok, 1 = fail, 2 = warning. Only a clean 0 is accepted.
+        if r.returncode == 0:
+            return {"accepted": True, "policy": "signtool_verify_kp",
+                    "method": attempts[-1]["method"],
+                    "catalog": attempts[-1]["catalog"], "attempts": attempts}
+    return {"accepted": False, "policy": "signtool_verify_kp", "attempts": attempts,
+            "reason": "no signature validated by the x64 kernel policy "
+                      "(embedded or via .cat)"}
 
 
 def collect_sys_files(
@@ -280,6 +384,7 @@ def collect_sys_files(
     *,
     verify: bool = True,
     include_native_pe: bool = False,
+    catalogs: list[Path] | None = None,
 ) -> list[dict]:
     """Walk `extracted_root`, find driver binaries, dedup by sha256, and copy
     survivors to `drivers_dir/<sha256>.sys`. Returns per-driver records.
@@ -289,7 +394,15 @@ def collect_sys_files(
     is collected too, regardless of extension — this recovers drivers that an
     MSI (`fil<hex>` stream names) or a PE-resource extraction (`107`, `725`)
     leaves without a `.sys` suffix, cross-platform and without Windows-only MSI
-    APIs. The native-subsystem test naturally excludes user-mode DLLs/EXEs."""
+    APIs. The native-subsystem test naturally excludes user-mode DLLs/EXEs.
+
+    `catalogs` is an optional list of detached `.cat` files (e.g. the ones a
+    Microsoft Update Catalog CAB ships beside its drivers) passed through to
+    `verify_signature` so catalog-signed drivers verify correctly. If omitted,
+    any `.cat` found under `extracted_root` is used automatically."""
+    if catalogs is None:
+        catalogs = sorted(p for p in extracted_root.rglob("*")
+                          if p.is_file() and p.suffix.lower() == ".cat")
     candidates = [p for p in extracted_root.rglob("*")
                   if p.is_file() and p.suffix.lower() == ".sys"]
     if include_native_pe:
@@ -311,9 +424,10 @@ def collect_sys_files(
             continue
         seen.add(digest)
         ident = pe_identity(p)
-        signature = verify_signature(p) if verify else {"accepted": None, "reason": "skipped"}
+        signature = verify_signature(p, catalogs) if verify else {"accepted": None, "reason": "skipped"}
         target = drivers_dir / f"{digest}.sys"
-        if not target.exists():
+        is_new = not target.exists()
+        if is_new:
             shutil.copy2(p, target)
         rows.append({
             "sha256": digest,
@@ -324,4 +438,9 @@ def collect_sys_files(
             "extraction_path": str(p.relative_to(extracted_root)),
             "stored_path": str(target),
         })
+        if is_new:
+            # Count only drivers NEW to the content-addressed corpus, so the live
+            # total tracks corpus growth and a re-download of an existing driver
+            # does not inflate it.
+            progress.add_count(1)
     return rows

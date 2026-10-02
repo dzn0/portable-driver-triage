@@ -129,3 +129,8 @@ validation_expected:
   - input_length_check
   - output_length_check
   - caller_privilege_check
+
+# --- collection-time search scope (pipeline.collect --scope arbitrary-physical-memory) ---
+search:
+  queries: ["Intel Chipset", "Intel Management Engine", "AMD Chipset", ASMedia, Chipset, Platform, Firmware]
+  categories: [system, firmware, chipset]

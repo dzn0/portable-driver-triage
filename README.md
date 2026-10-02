@@ -48,15 +48,19 @@ cryptography, angr), 7-Zip, and the vendored [DrvEye](https://github.com/0xDbgMa
 engine are all baked into the image.
 
 ```bash
-# build the image once
+# build the image once (includes headless Chromium for the catalog collector)
 docker compose build
 
-# 1. collect — downloads drivers from vendor sites (needs network)
-docker compose run --rm collect pipeline.collect loldrivers windivert
-#    ...or grab everything the registered collectors can reach:
-docker compose run --rm collect pipeline.collect --all
+# 1. collect — enumerate the Microsoft Update Catalog (needs network).
+#    No --scope → a broad sweep across device classes ("collect anything").
+docker compose run --rm collect pipeline.collect msupdate-catalog
+#    ...or narrow the SEARCH with a scope (profile name/short_name, or a free
+#    term). This is the collection-time half of the scope vocabulary:
+docker compose run --rm collect pipeline.collect msupdate-catalog --scope hid-input-control
+docker compose run --rm collect pipeline.collect msupdate-catalog --scope network
 
-# 2. analyze — static triage of one driver under a scope (network is cut)
+# 2. analyze — static triage of one driver under a scope (network is cut).
+#    Same scope names, applied to ANALYSIS instead of search.
 docker compose run --rm analyze pipeline.analyze <sha256> --scope arbitrary-physical-memory
 #    ...or batch the whole collected corpus (one crash never aborts the run):
 docker compose run --rm analyze pipeline.analyze --all --scope arbitrary-physical-memory --skip-existing
@@ -93,9 +97,18 @@ contract. Three ways to invoke it:
 
 ## Scopes
 
-A scope profile tells the pipeline what you're hunting for; it filters which drivers
-go deep and enriches the AI's vocabulary. Shipped profiles (in
-[`scope_profiles/`](scope_profiles/)):
+A scope profile tells the pipeline what you're hunting for. The same scope name is
+applied at **two points**:
+
+- **Search scope** — `pipeline.collect --scope <name>` narrows what the collector
+  *looks for*. A profile carries a `search:` block (catalog queries + category
+  tokens); `--scope` also accepts a free-text term (`--scope network`, `--scope
+  mouse`) used directly as a catalog query, so quick targeted collection needs no
+  profile. With no `--scope`, collection is a broad "anything" sweep.
+- **Analysis scope** — `pipeline.analyze --scope <name>` filters which collected
+  drivers go deep and enriches the AI's vocabulary.
+
+Shipped profiles (in [`scope_profiles/`](scope_profiles/)):
 
 | scope | capability |
 |---|---|
@@ -143,17 +156,22 @@ disposable isolated VM.
 
 ## How it works
 
-DrvEye is the L0→L3+ engine (see the note at the top); this project owns the collectors
-that feed it and the adapter that reshapes its JSON into the AI-handoff bundle (scope
-profiles, per-bundle `AGENTS.md`, the `index.jsonl` triage index, cited `findings.json`).
+DrvEye is the L0→L3+ engine (see the note at the top); this project owns the
+Microsoft Update Catalog collector that feeds it and the adapter that reshapes its
+JSON into the AI-handoff bundle (scope profiles, per-bundle `AGENTS.md`, the
+`index.jsonl` triage index, cited `findings.json`).
 
-The full rationale, the layered L0→L3+ methodology, the collector catalog, and the
-implementation status live in **[docs/DESIGN.md](docs/DESIGN.md)**. Vendor source
-catalog: **[SOURCES.md](SOURCES.md)**.
+The full rationale, the layered L0→L3+ methodology, the collection design, and the
+implementation status live in **[docs/DESIGN.md](docs/DESIGN.md)**. The earlier
+per-vendor source research (now superseded by the catalog collector) is kept for
+reference in **[SOURCES.md](SOURCES.md)**.
 
 ## Credits
 
 - Static engine: [DrvEye](https://github.com/0xDbgMan/DrvEye) by 0xDbgMan (MIT),
   vendored under [`vendor/drveye/`](vendor/drveye/) — provenance in
   [`VENDORED_FROM.txt`](vendor/drveye/VENDORED_FROM.txt).
-- Clone reference set: [LOLDrivers](https://www.loldrivers.io/).
+- Clone-detection reference: [LOLDrivers](https://www.loldrivers.io/). The local
+  reference-set collector was removed with the vendor collectors, so offline
+  `clone_hits` currently report `not_computed` until a snapshot is wired back in
+  (see [docs/DESIGN.md](docs/DESIGN.md#collection)).

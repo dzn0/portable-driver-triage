@@ -107,3 +107,8 @@ validation_expected:
   - msr_number_allowlist_check
   - caller_privilege_check
   - cr_value_sanity_check
+
+# --- collection-time search scope (pipeline.collect --scope msr-access) ---
+search:
+  queries: [Chipset, Overclocking, "Intel Extreme Tuning", Platform, "Management Engine"]
+  categories: [system, firmware]
