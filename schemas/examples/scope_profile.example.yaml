@@ -1,0 +1,70 @@
+# Example scope profile — fictional, for schema validation and authoring reference.
+#
+# This file exists to:
+#   1. Validate schema conformance via ci/validate.py (every scope-profile
+#      field is populated here, even with placeholder values).
+#   2. Serve as a copy-paste template when adding a real profile under
+#      scope_profiles/.
+#
+# Real profiles live in scope_profiles/. See docs/ranking.md for the
+# rank-weights formula, docs/l3_focus_selectors.md for the l3_focus
+# vocabulary, and docs/validation_checks.md for validation_expected.
+
+name:          example-vuln-class
+short_name:    exvuln
+description:   Example — a driver that exposes a fictional memory-poke primitive to usermode via a dedicated IOCTL.
+severity_prior: high
+
+imports_of_interest:
+  must_have_one:
+    - FakePokeMemory
+    - FakePokeMemoryEx
+  weight_each:
+    - FakeHelperA
+    - FakeHelperB
+
+methods_of_interest:
+  - METHOD_NEITHER
+  - METHOD_BUFFERED
+
+ioctl_patterns:
+  - '^0xdead[0-9a-f]{4}$'
+
+device_name_patterns:
+  - '^\\\\Device\\\\ExampleVuln'
+
+strings_of_interest:
+  - FakePoke
+  - ExampleVuln
+
+device_classes_of_interest:
+  - memory
+  - generic
+
+clone_cves:
+  - CVE-1999-0001
+
+rank_weights:
+  must_have_one:    10
+  dangerous_imports: 3
+  ioctl_match:       5
+  device_match:      5
+  string_match:      2
+  method_match:      2
+  clone_hit:         8
+
+l3_focus:
+  - handlers_dispatched_from_matching_ioctl
+  - functions_calling_any_of_must_have_one
+  - functions_reaching_sink: taint_sinks
+
+taint_sinks:
+  - FakePokeMemory
+  - FakePokeMemoryEx
+
+validation_expected:
+  - ProbeForRead
+  - ProbeForWrite
+  - input_length_check
+  - output_length_check
+  - caller_privilege_check

@@ -1,0 +1,178 @@
+# refs/interesting_strings.yaml
+#
+# Literal substrings that, when found inside a .sys's string table (via a
+# Capstone-style string scan over code and rdata sections), are high-signal
+# hints about the driver's exposed surface. L1 emits the hits into
+# signals.scope_independent.interesting_strings in index.jsonl.
+#
+# Matching
+# --------
+# - Case-insensitive by default.
+# - Substring match on both ASCII and UTF-16LE encodings.
+# - A single symbolic pattern starting with "regex:" is a Python re pattern
+#   evaluated against ASCII and UTF-16LE decodes of each candidate string.
+# - "match_as_whole_string: true" at the category level requires the whole
+#   extracted string (not just a substring) to equal the pattern. Use this
+#   for very short tokens that would otherwise false-positive everywhere.
+#
+# What goes here vs. dangerous_imports.yaml
+# ----------------------------------------
+# Imports: PE import-table symbols and compiler intrinsics.
+# Strings: user-visible or user-chosen tokens inside the binary — device
+# names, service names, debug prints, known-vulnerable-driver signatures,
+# protocol markers. Strings are weaker evidence than imports (they can appear
+# in error messages) but survive stripping and are the main handle on
+# intrinsic-based driver features.
+
+version: 1
+
+categories:
+
+  device_namespace:
+    description: Windows object-manager namespace prefixes that device names tend to live in.
+    strings:
+      - "\\Device\\"
+      - "\\DosDevices\\"
+      - "\\??\\"
+      - "\\\\.\\"
+
+  physical_memory_markers:
+    description: Strings that frequently appear in drivers that expose physical-memory primitives.
+    strings:
+      - PhysicalMemory
+      - \Device\PhysicalMemory
+      - MapPhysicalMemory
+      - ReadPhysical
+      - WritePhysical
+      - MapIoSpace
+      - UnmapIoSpace
+      - GetPhysAddr
+      - PhysAddr
+      - PhysicalAddress
+
+  msr_cr_markers:
+    description: Debug prints and function names that leak MSR / CR read-write surfaces.
+    strings:
+      - ReadMsr
+      - WriteMsr
+      - ReadMSR
+      - WriteMSR
+      - rdmsr
+      - wrmsr
+      - ReadCr
+      - WriteCr
+      - ControlRegister
+      - MSR_
+
+  port_io_markers:
+    description: Debug/function strings characteristic of port-I/O-exposing drivers.
+    strings:
+      - ReadPort
+      - WritePort
+      - InByte
+      - OutByte
+      - InPortByte
+      - OutPortByte
+      - IoPort
+
+  smm_markers:
+    description: SMM/SMI/APMC indicators.
+    strings:
+      - APMC
+      - SmiPort
+      - TriggerSmi
+      - IssueSmi
+      - SmmCommunicate
+
+  hid_input_markers:
+    description: HID / mouse / keyboard class markers. Legitimate for input drivers; a flag when combined with generic IOCTL dispatch.
+    strings:
+      - Kbdclass
+      - Mouclass
+      - HidClass
+      - HidP
+      - Mouhid
+      - Kbdhid
+      - \Device\KeyboardClass
+      - \Device\PointerClass
+      - \Device\Hid
+
+  process_token_markers:
+    description: Strings seen in drivers that enumerate processes or swap tokens.
+    strings:
+      - EPROCESS
+      - PsLookupProcessByProcessId
+      - PsReferencePrimaryToken
+      - PrimaryToken
+      - DuplicateToken
+      - TokenPrivileges
+      - ActiveProcessLinks
+      - UniqueProcessId
+
+  raw_disk_markers:
+    description: Raw-sector / volume access markers.
+    strings:
+      - \Device\Harddisk
+      - \Device\CdRom
+      - \DosDevices\PhysicalDrive
+      - PhysicalDrive0
+      - IOCTL_DISK_
+      - IOCTL_SCSI_
+      - IOCTL_VOLUME_
+
+  installer_vendor_markers:
+    description: Vendor / product markers common in OEM and peripheral installers. Not a vulnerability signal; purely helpful for identity and clustering.
+    strings:
+      - ASUS
+      - MSI
+      - ASRock
+      - Gigabyte
+      - Dell
+      - Lenovo
+      - HP
+      - Razer
+      - Corsair
+      - SteelSeries
+      - Logitech
+
+  known_vulnerable_driver_signatures:
+    description: >
+      Strings that appear verbatim in historically-vulnerable drivers. A hit
+      here is a very strong clustering signal that this binary IS or
+      descends from one of the LOLDrivers reference set. Confirm with clone
+      detection before concluding.
+    strings:
+      - WinRing0                     # OpenLibSys / HWiNFO lineage
+      - WinRing0x64
+      - WinRing0_
+      - RTCore64                     # MSI Afterburner (CVE-2019-16098)
+      - RwDrv                        # RWEverything (used by countless BYOVD chains)
+      - GLCKIO2                      # Giga-Byte (CVE-2018-19320)
+      - MsIo64                       # MSI (CVE-2019-18845)
+      - EneTechIo                    # ENE (CVE-2020-14979)
+      - PcdSrvc                      # various
+      - CPUZ                         # CPUID CPU-Z
+      - cpuz141
+      - AsrOmgDrv                    # ASRock
+      - AsrDrv101
+      - AsrAutoChkUpd                # ASRock update driver
+      - gdrv                         # GIGABYTE
+      - gdrv2
+      - dbutil_2_3                   # Dell DBUtil (CVE-2021-21551)
+      - SpeedFan
+      - directio                     # ATI/AMD DirectIO
+      - DBUtilDrv2
+      - PhyMem                       # dozens of lineages
+      - LenovoDiagnosticsDriver
+
+  misc_debug_leakage:
+    description: Generic debug prefixes that often precede the function name that logged them, giving a free partial symbol table.
+    strings:
+      - "[+] "
+      - "[DEBUG]"
+      - "[ERROR]"
+      - "DbgPrint"
+      - "KdPrint"
+      - "DEVICE_CONTROL"
+      - "IRP_MJ_DEVICE_CONTROL"
+      - "IoControlCode"

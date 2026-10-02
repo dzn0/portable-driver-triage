@@ -1,0 +1,104 @@
+# scope_profiles/disk-raw-io.yaml
+#
+# Hunts drivers that perform raw sector-level reads and writes against
+# physical drives, volumes, or SCSI stacks on behalf of usermode callers.
+# This is the ransomware primitive: a signed driver that can CreateFile
+# \\.\PhysicalDrive0 by proxy, or that will write a user-supplied buffer
+# to sector 0 of a user-named device.
+#
+# Reference incidents: "VirtualBoxDrvNT" lineage, several OEM backup /
+# imaging utilities, old versions of partition editors, and the Vice
+# Society / Lockbit tool-of-choice drivers (CVE-undated, see LOLDrivers).
+#
+# Note: a driver that imports the raw-disk APIs for legitimate storage
+# work (storage filter driver, backup minifilter) is routine. The signal
+# here is the combination of raw-I/O imports + METHOD_NEITHER dispatch
+# + no caller-privilege check — which L3 is responsible for confirming.
+
+name:          disk-raw-io
+short_name:    diskraw
+description:   Driver exposes raw sector / volume read-write on physical drives to usermode without a target-device allowlist.
+severity_prior: critical
+
+imports_of_interest:
+  must_have_one:
+    - IoBuildSynchronousFsdRequest
+    - IoBuildAsynchronousFsdRequest
+    - ZwReadFile
+    - ZwWriteFile
+    - ZwDeviceIoControlFile
+    - ZwFsControlFile
+  weight_each:
+    - IoGetDeviceObjectPointer
+    - IoCallDriver
+    - ZwQueryVolumeInformationFile
+    - ZwCreateFile
+    - ZwOpenFile
+    - ObReferenceObjectByHandle
+
+methods_of_interest:
+  - METHOD_NEITHER
+  - METHOD_OUT_DIRECT
+  - METHOD_IN_DIRECT
+  - METHOD_BUFFERED
+
+ioctl_patterns:
+  - '^0x22[0-9a-f]{4}$'
+  - '^0x7[0-9a-f]{4}$'    # IOCTL_DISK_* range starts around 0x70000
+  - '^0x4d[0-9a-f]{4}$'   # IOCTL_SCSI_* range
+
+device_name_patterns:
+  - '^\\\\Device\\\\Harddisk'
+  - '^\\\\Device\\\\CdRom'
+  - '^\\\\Device\\\\Scsi'
+  - '^\\\\Device\\\\Volume'
+
+strings_of_interest:
+  - IOCTL_DISK_
+  - IOCTL_SCSI_
+  - IOCTL_VOLUME_
+  - \Device\Harddisk
+  - \Device\CdRom
+  - \DosDevices\PhysicalDrive
+  - PhysicalDrive0
+  - PhysicalDrive1
+  - PartitionManager
+  - MBR
+  - GPT
+
+device_classes_of_interest:
+  - disk
+  - filter
+  - generic
+
+clone_cves:
+  # Many ransomware-abused drivers do not have a CVE assigned. The L3
+  # clone-detection reference set should still carry snippets from the
+  # LOLDrivers "disk" subset indexed by file hash rather than CVE.
+  - CVE-2020-28653
+
+rank_weights:
+  must_have_one:    7
+  dangerous_imports: 3
+  ioctl_match:       4
+  device_match:      6
+  string_match:      3
+  method_match:      2
+  clone_hit:         8
+
+l3_focus:
+  - handlers_dispatched_from_matching_ioctl
+  - functions_calling_any_of_must_have_one
+  - functions_opening_user_named_physical_drive
+
+taint_sinks:
+  - ZwReadFile
+  - ZwWriteFile
+  - IoBuildSynchronousFsdRequest
+  - IoCallDriver
+
+validation_expected:
+  - target_device_allowlist_check
+  - caller_privilege_check
+  - offset_and_length_sanity_check
+  - no_system_volume_target_check

@@ -1,0 +1,37 @@
+# Portable Driver Triage — convenience wrapper around the single image.
+#
+#   # build once
+#   docker compose build
+#
+#   # 1. collect (networked: downloads from vendor sites + the LOLDrivers ref set)
+#   docker compose run --rm collect pipeline.collect loldrivers windivert
+#
+#   # 2. analyze one driver under a scope (offline: network is cut)
+#   docker compose run --rm analyze pipeline.analyze <sha256> --scope arbitrary-physical-memory
+#
+#   # 3. on-demand pseudo-C for a cited function (offline)
+#   docker compose run --rm analyze pipeline.decompile <sha256> 0x401478
+#
+# pipeline_out/ (collected drivers + LOLDrivers snapshot) and reports/ (bundles +
+# index.jsonl) are bind-mounted, so results persist on the host between runs.
+
+x-pdt-common: &pdt-common
+  image: portable-driver-triage:latest
+  build: .
+  volumes:
+    - ./pipeline_out:/work/pipeline_out
+    - ./reports:/work/reports
+
+services:
+  # Networked stage: discovery + download from vendors / LOLDrivers.
+  collect:
+    <<: *pdt-common
+    command: ["pipeline.collect", "--list"]
+
+  # Static analysis stage. network_mode:none enforces the README's Safety-model
+  # promise that L0-L3+ is offline-after-pull — defense in depth, not required
+  # for correctness.
+  analyze:
+    <<: *pdt-common
+    network_mode: "none"
+    command: ["pipeline.collect", "--list"]

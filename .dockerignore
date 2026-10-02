@@ -1,0 +1,21 @@
+# Build context hygiene — keep the image lean and reproducible.
+# Outputs and collected data are runtime VOLUMES, never baked into the image.
+pipeline_out/
+reports/
+
+# Local Python envs / caches (the image builds its own venv).
+ci/.venv/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+
+# VCS metadata (including the vendored engine's own .git).
+.git/
+**/.git/
+.gitignore
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -1,0 +1,252 @@
+# refs/dangerous_imports.yaml
+#
+# Kernel-mode APIs and compiler intrinsics whose presence in a driver's import
+# table (or raw string references for intrinsics that compile to inline asm) is
+# a baseline signal that the driver may expose a BYOVD-grade primitive.
+#
+# Format
+# ------
+# categories.<name>:
+#   description: free-text, one line.
+#   severity:    critical | high | medium | low
+#                Prior on how damaging an unvalidated reachable call is. Not a
+#                verdict — "critical" imports are routine in legitimate drivers.
+#   symbols:     flat list of exact import/intrinsic names. Matching is
+#                case-insensitive, exact match on the symbol name as it appears
+#                in the PE import table or in raw bytes (for intrinsics).
+#   note:        optional, for symbols that need extra reader context.
+#
+# How L1 uses this
+# ----------------
+# The L1 stage iterates every category's `symbols`, matches against the
+# driver's imports (and, for intrinsic categories, scans sections for the
+# mnemonic signature), and emits the flat union into
+# signals.scope_independent.dangerous_imports in index.jsonl.
+#
+# Adding a symbol: append to the right category. No schema bump needed.
+# Adding a category: append freely; downstream code iterates categories.*
+#   and does not hardcode names.
+#
+# Sources
+# -------
+# Microsoft WDK / DDK documentation, LOLDrivers advisories, Eclypsium
+# "Screwed Drivers" research, j00ru's WinSAT papers, Satoshi Tanda's blog,
+# public BYOVD CVE write-ups (CVE-2020-14979, CVE-2019-16098, CVE-2021-21551,
+# CVE-2015-2291, CVE-2018-19320, CVE-2019-18845, CVE-2020-15368, ...).
+# No proprietary data.
+
+version: 1
+
+categories:
+
+  physical_memory:
+    description: Mapping, locking, or copying arbitrary physical / kernel memory into caller-controlled contexts.
+    severity: critical
+    symbols:
+      - MmMapIoSpace
+      - MmMapIoSpaceEx
+      - MmUnmapIoSpace
+      - MmMapLockedPages
+      - MmMapLockedPagesSpecifyCache
+      - MmUnmapLockedPages
+      - MmGetPhysicalAddress
+      - MmGetVirtualForPhysical
+      - MmAllocateContiguousMemory
+      - MmAllocateContiguousMemorySpecifyCache
+      - MmAllocateContiguousMemorySpecifyCacheNode
+      - MmAllocateMappingAddress
+      - MmFreeMappingAddress
+      - MmProbeAndLockPages
+      - MmProbeAndLockProcessPages
+      - MmProbeAndLockSelectedPages
+      - MmUnlockPages
+      - MmCopyMemory
+      - MmCopyVirtualMemory          # not exported, but seen as string in some driver copies
+      - IoAllocateMdl
+      - IoFreeMdl
+      - MmBuildMdlForNonPagedPool
+      - MmInitializeMdl
+
+  section_objects:
+    description: Section-object primitives that permit mapping \Device\PhysicalMemory or arbitrary files into process address space.
+    severity: critical
+    symbols:
+      - ZwOpenSection
+      - ZwCreateSection
+      - ZwMapViewOfSection
+      - ZwUnmapViewOfSection
+      - ZwOpenFile                    # when combined with mapping, used to open \Device\PhysicalMemory
+      - ObOpenObjectByName
+
+  port_io:
+    description: Legacy x86 port I/O. Combined with user-controlled port numbers these are universal arbitrary-hardware primitives.
+    severity: critical
+    symbols:
+      - READ_PORT_UCHAR
+      - READ_PORT_USHORT
+      - READ_PORT_ULONG
+      - READ_PORT_BUFFER_UCHAR
+      - READ_PORT_BUFFER_USHORT
+      - READ_PORT_BUFFER_ULONG
+      - WRITE_PORT_UCHAR
+      - WRITE_PORT_USHORT
+      - WRITE_PORT_ULONG
+      - WRITE_PORT_BUFFER_UCHAR
+      - WRITE_PORT_BUFFER_USHORT
+      - WRITE_PORT_BUFFER_ULONG
+
+  pci_config:
+    description: PCI configuration-space access through HAL helpers. User-controlled bus/device/function + offset is an arbitrary-config-space primitive.
+    severity: high
+    symbols:
+      - HalGetBusDataByOffset
+      - HalSetBusDataByOffset
+      - HalGetBusData
+      - HalSetBusData
+
+  msr_cr_access:
+    description: Model-specific-register and control-register reads/writes. Classic WinRing0 / RTCore / RWEverything primitive family.
+    severity: critical
+    note: >
+      These are compiler intrinsics, not imports — they compile to inline
+      rdmsr/wrmsr/mov-cr instructions. L1 flags them by scanning sections for
+      the mnemonic signatures as well as by the symbol names that appear in
+      PDBs and in some vendors' export tables.
+    symbols:
+      - __readmsr
+      - __writemsr
+      - __readcr0
+      - __writecr0
+      - __readcr2
+      - __readcr3
+      - __writecr3
+      - __readcr4
+      - __writecr4
+      - __readcr8
+      - __writecr8
+      - __invlpg
+      - __wbinvd
+      - __halt
+      - __rdpmc
+      - __rdtsc
+      - __rdtscp
+
+  smm_smi:
+    description: System-Management-Mode trigger surfaces. Direct SMI invocation from kernel is rare outside OEM firmware-update drivers.
+    severity: high
+    note: >
+      SMM entry is normally triggered by writing a value to the APMC I/O port
+      (default 0xB2). Flag this category when WRITE_PORT_UCHAR targets a value
+      derived from user input and the destination port is a known SMI trigger.
+    symbols:
+      - AsmGenerateSmi
+      - TriggerSmi
+      - IssueSmi
+
+  process_token:
+    description: Enumerate / open / duplicate / replace process primary tokens and credentials. The classic LPE-to-SYSTEM primitive.
+    severity: critical
+    symbols:
+      - PsLookupProcessByProcessId
+      - PsLookupThreadByThreadId
+      - PsGetProcessPeb
+      - PsReferencePrimaryToken
+      - PsDereferencePrimaryToken
+      - ObReferenceObjectByHandle
+      - ObReferenceObjectByPointer
+      - ObOpenObjectByPointer
+      - ObOpenObjectByName
+      - ZwOpenProcess
+      - ZwOpenProcessToken
+      - ZwOpenProcessTokenEx
+      - ZwDuplicateToken
+      - ZwSetInformationToken
+      - ZwQueryInformationToken
+      - SeAssignPrimaryToken
+      - SeExchangePrimaryToken
+
+  code_execution:
+    description: Primitives that cause code to run in another security context (APC injection, system threads, user-mode callouts from kernel).
+    severity: critical
+    symbols:
+      - KeInitializeApc
+      - KeInsertQueueApc
+      - KeTestAlertThread
+      - PsCreateSystemThread
+      - PsCreateSystemThreadEx
+      - ZwCreateThread
+      - ZwCreateThreadEx
+      - RtlCreateUserThread
+      - KeAttachProcess
+      - KeStackAttachProcess
+      - KeUnstackDetachProcess
+      - KeDetachProcess
+
+  callbacks_registration:
+    description: Kernel notification/callback registration. Not exploitable per se, but a signature of EDR-evasion drivers and anti-cheat drivers that attackers borrow.
+    severity: medium
+    symbols:
+      - PsSetCreateProcessNotifyRoutine
+      - PsSetCreateProcessNotifyRoutineEx
+      - PsSetCreateProcessNotifyRoutineEx2
+      - PsSetLoadImageNotifyRoutine
+      - PsSetLoadImageNotifyRoutineEx
+      - PsSetCreateThreadNotifyRoutine
+      - PsSetCreateThreadNotifyRoutineEx
+      - CmRegisterCallback
+      - CmRegisterCallbackEx
+      - ObRegisterCallbacks
+      - ObUnRegisterCallbacks
+
+  raw_disk_io:
+    description: Raw-sector disk access from kernel. Enables ransomware-style MBR/VBR writes and offline credential theft.
+    severity: critical
+    symbols:
+      - IoGetDeviceObjectPointer
+      - IoBuildSynchronousFsdRequest
+      - IoBuildAsynchronousFsdRequest
+      - IoCallDriver
+      - ZwReadFile
+      - ZwWriteFile
+      - ZwQueryVolumeInformationFile
+      - ZwFsControlFile
+      - ZwDeviceIoControlFile
+
+  hid_input:
+    description: HID / mouse / keyboard class driver surfaces. Legitimate for input drivers; a BYOVD vector when exposed via a general-purpose IOCTL.
+    severity: medium
+    symbols:
+      - HidRegisterMinidriver
+      - HidNotifyPresence
+      - HidP_GetCaps
+      - HidP_GetUsages
+      - IoAttachDeviceToDeviceStack
+      - IoReportDetectedDevice
+
+  file_system_minifilter:
+    description: Minifilter attachment points. Attackers abuse these for process-hollowing hiding and tamper-proofing payloads.
+    severity: medium
+    symbols:
+      - FltRegisterFilter
+      - FltStartFiltering
+      - FltCreateFile
+      - FltCreateFileEx
+      - FltSetCallbackDataDirty
+
+  gpu_dxgk:
+    description: DirectX / graphics kernel surfaces. Occasional source of memory-corruption CVEs in vendor overlays.
+    severity: medium
+    symbols:
+      - DxgkInitialize
+      - D3DKMTCreateAllocation
+      - D3DKMTEscape
+
+  network_raw:
+    description: WFP / TDI / NDIS raw-send surfaces. Not usually a BYOVD vector but a signature of network-interception drivers.
+    severity: low
+    symbols:
+      - FwpsInjectTransportSendAsync0
+      - FwpsInjectTransportReceiveAsync0
+      - NdisSendNetBufferLists
+      - NdisRegisterProtocol
+      - TdiRegisterDeviceObject

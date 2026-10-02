@@ -1,0 +1,25 @@
+# Pipeline output — downloaded binaries and per-run artifacts.
+# These are regeneratable from the collector; never commit.
+pipeline_out/
+
+# Analysis bundles + index — regeneratable from `pipeline.analyze`.
+reports/
+
+# Partial downloads (collector interrupted mid-fetch).
+*.part
+
+# Vendored third-party tools (populated by setup, not committed).
+vendor/tools/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

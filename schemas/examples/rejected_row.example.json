@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "sha256": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+  "driver_file": "updater_helper.sys",
+  "source_path": "pipeline/scratch/razer-synapse-3.9.0-extracted/support/updater_helper.sys",
+  "size_bytes": 48128,
+  "arch": "x64",
+  "reason": "wrong-subsystem",
+  "reason_detail": "IMAGE_SUBSYSTEM = 3 (WINDOWS_CUI) — expected 1 (NATIVE). File carries the .sys extension but is a user-mode helper, not a kernel driver.",
+  "detected_at": "2026-10-01T19:08:17Z",
+  "pipeline_version": "v0.3.1"
+}

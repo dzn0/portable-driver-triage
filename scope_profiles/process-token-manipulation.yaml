@@ -1,0 +1,100 @@
+# scope_profiles/process-token-manipulation.yaml
+#
+# Hunts drivers that enumerate, open, duplicate, or replace primary tokens
+# on arbitrary processes. The classic LPE-to-SYSTEM primitive and the
+# backbone of most "token-swap" rootkits. Also catches EDR-tamper drivers
+# that forcibly clear process-notification routines or detach kernel
+# callbacks to blind security products.
+#
+# Reference incidents: multiple game-cheat kernel drivers in 2022-2024,
+# the lineage of "KDU" / Kernel Driver Utility payloads, and vendor
+# diagnostic drivers that expose "open process by PID" for support tools.
+
+name:          process-token-manipulation
+short_name:    tokenmod
+description:   Driver enumerates, opens, duplicates, or replaces process primary tokens on attacker-controlled targets.
+severity_prior: critical
+
+imports_of_interest:
+  must_have_one:
+    - PsLookupProcessByProcessId
+    - ZwOpenProcess
+    - ZwOpenProcessToken
+    - ZwOpenProcessTokenEx
+    - ZwDuplicateToken
+    - ZwSetInformationToken
+    - SeAssignPrimaryToken
+    - SeExchangePrimaryToken
+    - PsReferencePrimaryToken
+  weight_each:
+    - PsLookupThreadByThreadId
+    - PsGetProcessPeb
+    - PsDereferencePrimaryToken
+    - ObReferenceObjectByHandle
+    - ObReferenceObjectByPointer
+    - ObOpenObjectByPointer
+    - KeAttachProcess
+    - KeStackAttachProcess
+    - KeUnstackDetachProcess
+    - ZwTerminateProcess
+    - ZwQueryInformationToken
+
+methods_of_interest:
+  - METHOD_NEITHER
+  - METHOD_BUFFERED
+  - METHOD_IN_DIRECT
+  - METHOD_OUT_DIRECT
+
+ioctl_patterns:
+  - '^0x22[0-9a-f]{4}$'
+
+device_name_patterns: []
+# These drivers rarely use distinctive device names — the surface is on the
+# imports side. Leave empty to avoid rewarding unrelated \Device\Foo hits.
+
+strings_of_interest:
+  - EPROCESS
+  - PsLookupProcessByProcessId
+  - PsReferencePrimaryToken
+  - PrimaryToken
+  - DuplicateToken
+  - TokenPrivileges
+  - ActiveProcessLinks
+  - UniqueProcessId
+
+device_classes_of_interest:
+  - process
+  - filter
+  - generic
+
+clone_cves:
+  - CVE-2022-42046    # wfshbr64 — primary primitive is write-what-where; frequently used as a leg in token-swap LPE chains, so the clone signature is still useful here.
+# CVE-2023-36874 removed: Windows Error Reporting LPE, not a driver-clone pattern.
+
+rank_weights:
+  must_have_one:    8
+  dangerous_imports: 3
+  ioctl_match:       3
+  device_match:      1   # low — device names are weak here
+  string_match:      3
+  method_match:      2
+  clone_hit:         8
+
+l3_focus:
+  - handlers_dispatched_from_matching_ioctl
+  - functions_calling_any_of_must_have_one
+  - functions_that_write_to_EPROCESS_token_offset
+
+taint_sinks:
+  - ZwOpenProcessToken
+  - ZwOpenProcessTokenEx
+  - ZwDuplicateToken
+  - ZwSetInformationToken
+  - SeAssignPrimaryToken
+  - SeExchangePrimaryToken
+
+validation_expected:
+  - target_pid_allowlist_check
+  - caller_integrity_check
+  - caller_sid_check
+  - no_system_pid_target_check

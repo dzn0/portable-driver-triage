@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "driver_sha256": "aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb",
+  "scope": "arbitrary-physical-memory",
+  "agent": "claude-opus-4-7",
+  "generated_at": "2026-10-01T19:40:00Z",
+  "findings": [
+    {
+      "id": "F-001",
+      "title": "Unvalidated MmMapIoSpace reachable via IOCTL 0x22e000",
+      "class": "arbitrary-physical-memory-read-write",
+      "confidence": "CONFIRMED",
+      "severity_in_scope": "high",
+      "ioctl": "0x22e000",
+      "handler": "0x14000b1c0",
+      "method": "METHOD_NEITHER",
+      "call_chain": [
+        {"file": "l3_decomp/0x14000a200.c", "line": 17, "note": "dispatch to 0x14000b1c0"},
+        {"file": "l3_decomp/0x14000b1c0.c", "line": 22, "note": "no ProbeForRead on SystemBuffer"},
+        {"file": "l3_decomp/0x14000b1c0.c", "line": 34, "note": "MmMapIoSpace with attacker-controlled PhysicalAddress and Length"},
+        {"file": "../disasm_full.txt",      "line": 8422, "note": "call MmMapIoSpace confirmed in raw asm"}
+      ],
+      "primitive": "Arbitrary physical memory mapped into caller address space, read and write.",
+      "clone_evidence": {
+        "ref": "CVE-2020-14979",
+        "similarity": 0.83,
+        "source": "l3_decomp/clones.json#ene_sys"
+      },
+      "detection_ideas": [
+        "YARA: imports MmMapIoSpace + METHOD_NEITHER dispatch for 0x22e000",
+        "EDR: driver load event where ServiceName is not on the allowlist"
+      ],
+      "notes_for_human": "Pseudo-C elides a length check that is also absent in the asm; the gap is real, not a decompiler artifact."
+    }
+  ],
+  "out_of_scope": [],
+  "unknowns": [
+    "Signer chain for intermediate CA not resolvable from bundle"
+  ]
+}

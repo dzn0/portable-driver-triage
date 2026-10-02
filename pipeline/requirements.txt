@@ -1,0 +1,19 @@
+# Pipeline dependencies (adapter + bundle writer + on-demand decompilation).
+#
+# The vendored DrvEye engine has its own deps in vendor/drveye/requirements.txt;
+# the ones below are what pipeline/ imports directly. Install both:
+#     pip install -r vendor/drveye/requirements.txt -r pipeline/requirements.txt
+
+# --- shared with DrvEye (needed because the adapter imports the engine) ---
+pefile>=2023.2.7              # PE parsing (reused via vendor/drveye PEAnalyzer)
+capstone>=5.0.1               # linear-sweep disassembly → disasm_full.txt
+cryptography>=42.0.0          # Authenticode (pulled in by the engine import)
+
+# --- owned by this layer ---
+PyYAML>=6.0                   # scope profile + refs/*.yaml loading
+Jinja2>=3.1                   # per-bundle AGENTS.md rendering
+
+# --- on-demand decompilation (pipeline.decompile, angr backend) ---
+# Heavy (~hundreds of MB) but local and JVM-free. Only needed when you
+# materialize pseudo-C; the asm-only backend works without it.
+angr>=10.0

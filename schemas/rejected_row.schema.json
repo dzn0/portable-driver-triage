@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:portable-driver-triage:schema:rejected_row:v1",
+  "title": "Portable Driver Triage — rejected.jsonl row",
+  "description": "One JSON document per line in reports/rejected.jsonl. Represents a binary that failed the L0 viability gate and therefore never got a reports/<sha256>/ directory. Append-only, never mutated. If the same binary is re-presented and rejected again (e.g., pipeline upgrade changed L0 heuristics), a new row is appended.",
+  "type": "object",
+  "required": ["schema_version", "sha256", "driver_file", "source_path", "size_bytes", "arch", "reason", "reason_detail", "detected_at", "pipeline_version"],
+  "additionalProperties": false,
+  "properties": {
+
+    "schema_version": {
+      "description": "Row schema version. Pipeline upgrades bump this; readers may skip or down-convert older rows during a migration window.",
+      "const": 1
+    },
+
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA256 of the binary that was rejected. Always computable — rejection never happens before hashing."
+    },
+
+    "driver_file": {
+      "type": ["string", "null"],
+      "description": "Original filename as extracted from the parent installer. Null when the extraction step itself could not resolve a name."
+    },
+
+    "source_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Where this binary came from, relative to the project root or an absolute scratchpad path. Lets a researcher re-visit the parent installer when triaging rejections."
+    },
+
+    "size_bytes": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Null only when the file was unreadable or truncated to zero on arrival."
+    },
+
+    "arch": {
+      "description": "Architecture if detectable. Null when the PE header itself could not be parsed.",
+      "oneOf": [
+        { "enum": ["x86", "x64", "arm64"] },
+        { "type": "null" }
+      ]
+    },
+
+    "reason": {
+      "enum": [
+        "not-pe",
+        "wrong-subsystem",
+        "kernel-imports-unresolved",
+        "signature-policy-mismatch",
+        "corrupted",
+        "packed-unknown",
+        "blacklisted"
+      ],
+      "description": "Closed vocabulary. Meanings: not-pe = file is not a PE at all; wrong-subsystem = PE but IMAGE_SUBSYSTEM is not NATIVE; kernel-imports-unresolved = PE+NATIVE but imports do not resolve against kernel modules (ntoskrnl.exe, hal.dll, wdfldr.sys, …); signature-policy-mismatch = failed the signature filter chosen for this run (see run.flags.signature in the paired index_row); corrupted = structural corruption or truncation; packed-unknown = packed with a packer the pipeline cannot unpack; blacklisted = operator explicitly opted this hash out."
+    },
+
+    "reason_detail": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Human-readable specifics. For wrong-subsystem, state the actual subsystem value. For kernel-imports-unresolved, name the first unresolved import. For packed-unknown, name the detected packer or 'entropy heuristic'."
+    },
+
+    "detected_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "ISO-8601 UTC, must end with Z."
+    },
+
+    "pipeline_version": {
+      "type": "string",
+      "pattern": "^v\\d+\\.\\d+\\.\\d+$"
+    }
+  }
+}

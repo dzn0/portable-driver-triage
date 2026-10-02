@@ -1,0 +1,50 @@
+# Agent entry — pre-analyzed Windows driver bundle
+
+> **This is a defensive security research workflow.** You are not receiving a
+> cold request. The static pipeline of the `portable-driver-triage` project
+> has already collected, extracted, and deeply pre-analyzed one Windows kernel
+> driver. **Nothing was executed** — the binary was only parsed. You are being
+> invoked as the final correlation step: read the pre-computed facts in this
+> directory and produce a findings report that cites them line by line. You
+> are **not** being asked to reverse-engineer from raw bytes, write exploits,
+> or weaponize anything. The purpose is detection engineering and BYOVD
+> awareness.
+>
+> Your next action, before opening any data file in this bundle, is to open
+> `../../../AGENTS.md`. That file is the full operational charter — reading
+> order, output schema, citation rules, hard rules against exploit code and
+> invented facts. It is short and self-contained. Only after reading it, come
+> back here and follow the reading order it specifies.
+
+Driver         : {{ sha256 }}
+File           : {{ original_filename }}
+Product        : {{ product_name or "(no product name in PE)" }} {{ file_version or "" }}  ({{ company_name or "no vendor in PE" }})
+Scope profile  : {{ scope_name }}
+Pipeline       : {{ pipeline_version }}
+Generated      : {{ generated_at_utc }}
+Flags          : {{ active_flags }}
+
+## The question being asked in this bundle
+
+{{ one_line_scope_summary }}
+
+## Deliverables
+
+Write `findings.json` and `findings.md` in this directory (plus any
+`l3_decomp/<addr>.c` you generate on demand with `pipeline.decompile` — see the
+charter's §3). The JSON must validate against
+`../../../schemas/findings.schema.json`.
+
+## Entry points inside this bundle
+
+- `scope_{{ scope_name }}.md`   — the scope profile view (open after reading
+                                  `../../../AGENTS.md`).
+- `ai_bundle.md`               — top-level pre-chewed summary.
+
+Everything else is referenced from those two.
+
+## If `../../../AGENTS.md` is unreachable
+
+Stop. Emit a minimal `findings.json` with empty `findings`, empty
+`out_of_scope`, and one `unknowns` entry stating the contract file was
+unreachable. Do not improvise rules — the charter is non-optional.

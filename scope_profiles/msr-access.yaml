@@ -1,0 +1,109 @@
+# scope_profiles/msr-access.yaml
+#
+# Hunts drivers that expose read / write of model-specific registers (MSRs)
+# or x86 control registers to usermode. This is the WinRing0 / RTCore /
+# CPU-Z family — once a caller can wrmsr arbitrary values, they can rewrite
+# SYSENTER_EIP, LSTAR, EFER, or disable SMEP/SMAP.
+#
+# Reference incidents: CVE-2019-16098 (RTCore64 / MSI Afterburner),
+# WinRing0 lineage (dozens of OEM / monitoring vendors), AsrDrv101
+# (ASRock), and the long tail of CPUID / overclocking utilities.
+#
+# This profile overlaps with `arbitrary-physical-memory` deliberately —
+# a driver that exposes both is maximally dangerous and the Mode-C index
+# will carry both scope entries in scope_matches[].
+#
+# Compiler intrinsics
+# -------------------
+# __readmsr / __writemsr / __read*cr* compile to inline instructions, not
+# calls. L1 flags them two ways: (a) by scanning for the mnemonics in the
+# code sections, and (b) by matching the symbol names in exports and PDB
+# strings when present. See refs/dangerous_imports.yaml::msr_cr_access.
+
+name:          msr-access
+short_name:    msr
+description:   Driver exposes read or write of attacker-controlled MSRs or control registers to usermode.
+severity_prior: critical
+
+imports_of_interest:
+  must_have_one:
+    - __readmsr
+    - __writemsr
+    - __readcr0
+    - __writecr0
+    - __readcr3
+    - __writecr3
+    - __readcr4
+    - __writecr4
+  weight_each:
+    - __readcr2
+    - __readcr8
+    - __writecr8
+    - __invlpg
+    - __wbinvd
+    - __halt
+    - __rdpmc
+    - __rdtsc
+    - __rdtscp
+
+methods_of_interest:
+  - METHOD_NEITHER
+  - METHOD_IN_DIRECT
+  - METHOD_OUT_DIRECT
+  - METHOD_BUFFERED
+
+ioctl_patterns:
+  - '^0x22[0-9a-f]{4}$'
+  - '^0x9c[0-9a-f]{4}$'   # some WinRing0 lineages use FILE_DEVICE_UNKNOWN|0x9c0 upwards
+
+device_name_patterns:
+  - '^\\\\Device\\\\(WinRing0|RTCore|RwDrv|CpuZ|cpuz)'
+
+strings_of_interest:
+  - ReadMsr
+  - WriteMsr
+  - rdmsr
+  - wrmsr
+  - MSR_
+  - ControlRegister
+  - ReadCr
+  - WriteCr
+  - WinRing0
+  - RTCore
+  - RwDrv
+
+device_classes_of_interest:
+  - msr
+  - generic
+
+clone_cves:
+  - CVE-2019-16098
+  - CVE-2020-14979
+  # WinRing0 has no single canonical CVE — matched purely on signature.
+
+rank_weights:
+  must_have_one:    10
+  dangerous_imports: 4   # intrinsic hit is strong by itself
+  ioctl_match:       4
+  device_match:      7   # named device like \Device\WinRing0 is near-conclusive
+  string_match:      3
+  method_match:      2
+  clone_hit:         9
+
+l3_focus:
+  - handlers_dispatched_from_matching_ioctl
+  - functions_calling_any_of_must_have_one
+  - functions_reaching_sink: taint_sinks
+
+taint_sinks:
+  - __readmsr
+  - __writemsr
+  - __writecr0
+  - __writecr3
+  - __writecr4
+  - __writecr8
+
+validation_expected:
+  - msr_number_allowlist_check
+  - caller_privilege_check
+  - cr_value_sanity_check

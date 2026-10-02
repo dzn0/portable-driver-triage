@@ -1,0 +1,131 @@
+# scope_profiles/arbitrary-physical-memory.yaml
+#
+# Hunts drivers that expose read/write/map of ARBITRARY physical memory to
+# usermode callers. Historically the richest BYOVD class — once a caller can
+# map \Device\PhysicalMemory or an arbitrary MmMapIoSpace range, every other
+# privilege boundary on the box is reachable.
+#
+# Reference incidents: CVE-2018-19320 (GLCKIO2/Giga-Byte), CVE-2019-18845
+# (MsIo), CVE-2020-14979 (ENE / EneTechIo), CVE-2021-21551 (Dell DBUtil),
+# CVE-2015-2291 (Intel iqvw64e.sys).
+#
+# Field semantics
+# ---------------
+# name                       : stable identifier, matches the filename stem.
+#                              Also appears verbatim in index.jsonl at
+#                              run.scope_profile and in scope_matches[].scope.
+# short_name                 : <= 10 chars, used as the <scope-short> suffix
+#                              in run_id (see schemas/index_row.schema.json).
+# severity_prior             : operator's expectation when the profile fires.
+# must_have_one              : the profile does not fire for a driver unless
+#                              AT LEAST ONE of these imports is present. Keeps
+#                              the index clean of noise.
+# weight_each                : each hit adds `rank_weights.dangerous_imports`.
+# methods_of_interest        : IOCTL dispatch methods ranked worst-first.
+# ioctl_patterns             : Python-regex on the normalized `0xHHHHHHHH`
+#                              IOCTL string.
+# device_name_patterns       : Python-regex on \Device\... names found in L1.
+# strings_of_interest        : substrings for scope-level string matching
+#                              (on top of what L1 already extracted).
+# device_classes_of_interest : subset of the closed `device_classes` enum
+#                              that this profile considers relevant.
+# clone_cves                 : CVEs whose reference snippets, if matched by
+#                              L3 clone-detection, bump the rank sharply.
+# rank_weights               : multipliers used by the ranking formula.
+#                              See docs/ranking.md for the exact formula —
+#                              purely additive, sum of (hit_count * weight)
+#                              across the categories listed there.
+# l3_focus                   : hints the function gate uses to decide which
+#                              handlers get full pseudo-C decompilation.
+# taint_sinks                : sinks L3's taint pass must reach for a
+#                              handler to be reported as "confirmed-primitive".
+
+name:          arbitrary-physical-memory
+short_name:    physmem
+description:   Driver exposes read, write, or mapping of attacker-controlled physical memory to usermode.
+severity_prior: critical
+
+imports_of_interest:
+  must_have_one:
+    - MmMapIoSpace
+    - MmMapIoSpaceEx
+    - MmMapLockedPages
+    - MmMapLockedPagesSpecifyCache
+    - ZwMapViewOfSection
+    - MmCopyMemory
+  weight_each:
+    - MmGetPhysicalAddress
+    - MmGetVirtualForPhysical
+    - MmAllocateContiguousMemory
+    - MmAllocateContiguousMemorySpecifyCache
+    - MmProbeAndLockPages
+    - MmProbeAndLockProcessPages
+    - MmUnlockPages
+    - IoAllocateMdl
+    - MmBuildMdlForNonPagedPool
+    - ZwOpenSection
+    - ZwCreateSection
+
+methods_of_interest:
+  - METHOD_NEITHER
+  - METHOD_IN_DIRECT
+  - METHOD_OUT_DIRECT
+  - METHOD_BUFFERED
+
+ioctl_patterns:
+  - '^0x22[0-9a-f]{4}$'   # standard FILE_DEVICE_UNKNOWN control codes
+
+device_name_patterns:
+  - '^\\\\Device\\\\PhysicalMemory$'
+  - '^\\\\Device\\\\.*Phy'
+
+strings_of_interest:
+  - PhysicalMemory
+  - '\Device\PhysicalMemory'
+  - MapPhysicalMemory
+  - ReadPhysical
+  - WritePhysical
+  - MapIoSpace
+  - UnmapIoSpace
+  - PhysAddr
+
+device_classes_of_interest:
+  - memory
+  - generic
+
+clone_cves:
+  - CVE-2015-2291
+  - CVE-2018-19320
+  - CVE-2019-18845
+  - CVE-2020-14979
+  - CVE-2020-15368
+  - CVE-2021-21551
+
+rank_weights:
+  must_have_one:    10
+  dangerous_imports: 3
+  ioctl_match:       5
+  device_match:      6
+  string_match:      2
+  method_match:      2
+  clone_hit:         8
+
+l3_focus:
+  - handlers_dispatched_from_matching_ioctl
+  - functions_calling_any_of_must_have_one
+  - functions_reaching_sink: taint_sinks
+
+taint_sinks:
+  - MmMapIoSpace
+  - MmMapIoSpaceEx
+  - MmMapLockedPages
+  - MmMapLockedPagesSpecifyCache
+  - MmCopyMemory
+  - ZwMapViewOfSection
+
+validation_expected:
+  - ProbeForRead
+  - ProbeForWrite
+  - input_length_check
+  - output_length_check
+  - caller_privilege_check

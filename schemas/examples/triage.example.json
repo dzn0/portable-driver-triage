@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "query": "find drivers that allow arbitrary physical I/O",
+  "query_slug": "arbitrary-physical-io",
+  "agent": "claude-opus-4-7",
+  "generated_at": "2026-10-01T20:04:00Z",
+  "rows_scanned": 427,
+  "rows_after_dedup": 320,
+  "predicate_used": "signals.scope_independent.scope_matches contains arbitrary-physical-memory OR signals.scope_independent.dangerous_imports intersects {MmMapIoSpace, MmMapLockedPages, ZwMapViewOfSection, __writecr3}",
+  "candidates": [
+    {
+      "sha256": "aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb",
+      "scope_profile": "arbitrary-physical-memory",
+      "run_id": "20261001T191244Z-physmem",
+      "rank": 9,
+      "one_liner": "OverclockHelper 2.1.4 (ExampleVendor): MmMapIoSpace reachable via METHOD_NEITHER IOCTL 0x22e000; 0.83 clone against CVE-2020-14979.",
+      "matched_signals": {
+        "scope_matches": [
+          {"scope": "arbitrary-physical-memory", "rank": 9}
+        ],
+        "dangerous_imports_hit": ["MmMapIoSpace", "ZwMapViewOfSection"],
+        "device_classes_hit": ["memory"],
+        "interesting_strings_hit": ["PhysicalMemory"],
+        "clone_hits": [
+          {"ref_id": "ene_sys", "cve": "CVE-2020-14979", "similarity": 0.83}
+        ]
+      },
+      "status": "already_analyzed_deep",
+      "bundle_path": "reports/aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb/20261001T191244Z-physmem/"
+    },
+    {
+      "sha256": "11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff",
+      "scope_profile": "hid-input-control",
+      "run_id": "20260920T083212Z-hidctrl",
+      "rank": 6,
+      "one_liner": "Razer configurator helper: dangerous_imports contains MmMapIoSpace; bundle was analyzed under hid-input-control, not arbitrary-physical-memory — needs deep rerun with the matching scope.",
+      "matched_signals": {
+        "scope_matches": [
+          {"scope": "arbitrary-physical-memory", "rank": 6}
+        ],
+        "dangerous_imports_hit": ["MmMapIoSpace"],
+        "device_classes_hit": ["hid"],
+        "interesting_strings_hit": [],
+        "clone_hits": []
+      },
+      "status": "needs_deep_rerun",
+      "bundle_path": "reports/11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff/20260920T083212Z-hidctrl/"
+    }
+  ],
+  "no_matches_but_closely_related": [],
+  "unknowns": []
+}

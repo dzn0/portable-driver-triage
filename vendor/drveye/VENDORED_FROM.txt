@@ -1,0 +1,18 @@
+DrvEye — vendored third-party engine
+=====================================
+
+This directory is a vendored snapshot of the DrvEye static-analysis engine,
+committed as plain files inside portable-driver-triage (not a submodule), so a
+`git clone` of this repo builds without extra steps and the Docker image can
+COPY it directly.
+
+Upstream provenance (do not lose this):
+
+    source:  https://github.com/0xDbgMan/DrvEye.git
+    commit:  8f538197101de21d0ceb2d6e14af9a2828235a2b
+    short:   8f53819
+    date:    2026-04-27 19:23:55 +0300
+
+To refresh against upstream: re-clone that commit (or a newer one), copy the
+tree over this directory, update the fields above, and re-run the Docker build
+healthcheck.

@@ -1,0 +1,122 @@
+# refs/device_classes.yaml
+#
+# Heuristic table that maps raw L1 signals (dangerous imports, interesting
+# strings, device-name patterns) onto the closed `device_classes` enum from
+# schemas/index_row.schema.json:
+#
+#   hid | input | disk | net | process | memory | msr | gpu | usb | filter | generic
+#
+# Why a closed enum
+# -----------------
+# Device-class is a top-level predicate for Mode-C triage. If the vocabulary
+# drifts, cross-corpus queries break silently. New classes must be added here
+# AND to the schema's enum (which bumps schema_version). Keep the vocabulary
+# intentionally small; a driver can belong to multiple classes.
+#
+# Election rule
+# -------------
+# A class is elected for a driver when any `any_of` rule inside its `rules`
+# block matches. Each rule is an AND over its listed conditions
+# (`imports`, `strings`, `device_name_regex`). The class list on the row is
+# the set of all elected classes, deduplicated and sorted.
+#
+# `generic` is the fallback: elected only when no other class fires. L1 must
+# never emit an empty `device_classes` array.
+
+version: 1
+
+classes:
+
+  hid:
+    description: Human-Interface-Device minidriver or class filter. Legitimate for input peripherals; a BYOVD indicator when combined with a general-purpose IOCTL dispatch.
+    rules:
+      any_of:
+        - imports: [HidRegisterMinidriver]
+        - imports: [HidP_GetCaps, HidP_GetUsages]
+        - strings: [HidClass, Mouhid, Kbdhid]
+        - device_name_regex: '^\\\\Device\\\\Hid'
+
+  input:
+    description: Keyboard / mouse / pointer class driver or filter. Separate from `hid` because legacy PS/2 and non-HID input stacks still exist and have their own BYOVD history.
+    rules:
+      any_of:
+        - strings: [Kbdclass, Mouclass]
+        - device_name_regex: '^\\\\Device\\\\(KeyboardClass|PointerClass|Kbd|Mou)'
+        - imports: [IoAttachDeviceToDeviceStack]
+          strings: [Kbdclass, Mouclass]
+
+  disk:
+    description: Raw sector / volume / storage-stack access. Elevates immediately to `disk` even when the exposure is through generic file I/O to \Device\HarddiskN.
+    rules:
+      any_of:
+        - imports: [IoBuildSynchronousFsdRequest, IoBuildAsynchronousFsdRequest]
+        - strings: [IOCTL_DISK_, IOCTL_SCSI_, IOCTL_VOLUME_]
+        - device_name_regex: '^\\\\Device\\\\(Harddisk|CdRom|Scsi|Volume)'
+        - strings: ['\DosDevices\PhysicalDrive', PhysicalDrive0]
+
+  net:
+    description: WFP / TDI / NDIS network driver surface.
+    rules:
+      any_of:
+        - imports: [FwpsInjectTransportSendAsync0, FwpsInjectTransportReceiveAsync0]
+        - imports: [NdisRegisterProtocol, NdisSendNetBufferLists]
+        - imports: [TdiRegisterDeviceObject]
+
+  process:
+    description: Enumerates, opens, or manipulates process / thread objects. Set when ANY of the process-token imports are present even if the driver's primary purpose is elsewhere — exposure is what matters.
+    rules:
+      any_of:
+        - imports: [PsLookupProcessByProcessId, PsLookupThreadByThreadId]
+        - imports: [ZwOpenProcess, ZwOpenProcessToken, ZwOpenProcessTokenEx]
+        - imports: [ZwDuplicateToken, ZwSetInformationToken, SeAssignPrimaryToken]
+        - imports: [KeAttachProcess, KeStackAttachProcess]
+
+  memory:
+    description: Arbitrary virtual / physical memory primitives — mapping, locking, copying, section objects.
+    rules:
+      any_of:
+        - imports: [MmMapIoSpace, MmMapIoSpaceEx]
+        - imports: [MmMapLockedPages, MmMapLockedPagesSpecifyCache]
+        - imports: [MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache]
+        - imports: [MmGetPhysicalAddress, MmGetVirtualForPhysical]
+        - imports: [ZwMapViewOfSection, ZwOpenSection, ZwCreateSection]
+        - imports: [MmCopyMemory]
+        - strings: [PhysicalMemory, '\Device\PhysicalMemory', MapPhysicalMemory]
+
+  msr:
+    description: Model-specific-register or control-register read / write primitives. Flag the class on either imports (rare — some vendors wrap intrinsics in exported helpers) or intrinsic string hits in code sections.
+    rules:
+      any_of:
+        - imports: [__readmsr, __writemsr]
+        - imports: [__readcr0, __writecr0, __readcr3, __writecr3, __readcr4, __writecr4]
+        - strings: [ReadMsr, WriteMsr, rdmsr, wrmsr, MSR_, ControlRegister]
+
+  gpu:
+    description: Graphics / DirectX kernel surfaces.
+    rules:
+      any_of:
+        - imports: [DxgkInitialize, D3DKMTCreateAllocation, D3DKMTEscape]
+        - device_name_regex: '^\\\\Device\\\\(DxgKrnl|Video)'
+
+  usb:
+    description: USB stack minidriver / filter. Separate from `hid` because many USB vendor drivers aren't HID (storage, serial, custom protocols) but still carry USB-specific IOCTL surfaces.
+    rules:
+      any_of:
+        - imports: [USBD_CreateHandle, USBD_UrbAllocate]
+        - device_name_regex: '^\\\\Device\\\\(USBPDO|Usb)'
+        - strings: [IOCTL_USB_, UsbClass]
+
+  filter:
+    description: Minifilter / registry callback / object callback driver — not a device driver in the traditional sense, but a prolific category and a frequent EDR-tamper surface.
+    rules:
+      any_of:
+        - imports: [FltRegisterFilter, FltStartFiltering]
+        - imports: [CmRegisterCallback, CmRegisterCallbackEx]
+        - imports: [ObRegisterCallbacks]
+        - imports: [PsSetCreateProcessNotifyRoutine, PsSetCreateProcessNotifyRoutineEx]
+        - imports: [PsSetLoadImageNotifyRoutine]
+
+  generic:
+    description: Fallback — elected only when none of the above fire. L1 emits this when the driver appears to be a generic kernel-mode service driver (no distinctive stack).
+    rules:
+      fallback: true

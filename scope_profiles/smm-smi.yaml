@@ -1,0 +1,101 @@
+# scope_profiles/smm-smi.yaml
+#
+# Hunts drivers that trigger System Management Mode (SMM) entry from kernel.
+# SMM runs at a higher ring than the OS kernel; a driver that lets usermode
+# influence an SMI number or payload opens a path into firmware-level
+# code execution.
+#
+# The mechanic is almost always: WRITE_PORT_UCHAR(0xB2, smi_number) or
+# WRITE_PORT_UCHAR(APMC, user_value), optionally with a staged buffer
+# written through PCI config space or a UC-mapped region beforehand.
+#
+# Reference incidents: numerous OEM firmware-update utilities; Eclypsium's
+# "Screwed Drivers" catalogue; multiple AMI / Insyde / Phoenix helpers.
+#
+# This profile is narrower than the memory/MSR ones — SMM-triggering
+# drivers are rarer. Keep weights sharp and prefer small, high-confidence
+# matches to a wide net.
+
+name:          smm-smi
+short_name:    smmsmi
+description:   Driver triggers System Management Mode entry under attacker-controlled parameters (SMI number, APMC payload, or staged firmware communication buffer).
+severity_prior: critical
+
+imports_of_interest:
+  must_have_one:
+    - WRITE_PORT_UCHAR
+    - WRITE_PORT_USHORT
+    - WRITE_PORT_ULONG
+  weight_each:
+    - READ_PORT_UCHAR
+    - READ_PORT_USHORT
+    - READ_PORT_ULONG
+    - HalGetBusDataByOffset
+    - HalSetBusDataByOffset
+    - MmMapIoSpace             # SMM comm buffers are frequently prepared via UC mapping
+    - MmAllocateContiguousMemorySpecifyCache
+
+methods_of_interest:
+  - METHOD_NEITHER
+  - METHOD_BUFFERED
+  - METHOD_IN_DIRECT
+  - METHOD_OUT_DIRECT
+
+ioctl_patterns:
+  - '^0x22[0-9a-f]{4}$'
+
+device_name_patterns:
+  - '^\\\\Device\\\\(Ami|Insyde|Phoenix|Afu|Fw|Bios|Smi|Smm)'
+
+strings_of_interest:
+  - APMC
+  - SmiPort
+  - TriggerSmi
+  - IssueSmi
+  - SmmCommunicate
+  - AMI
+  - AMIFLDRV
+  - Insyde
+  - AfuWin
+  - BiosUpdate
+  - FwUpdate
+
+# Important: catch the raw constant 0xB2 (standard APMC port) as a short
+# token. The pipeline's string scanner should also match "0xb2" case-
+# insensitively when it appears as a byte-sized immediate near a
+# WRITE_PORT_UCHAR import xref — but that is an L2 scoring job, not a
+# scope-profile string match.
+
+device_classes_of_interest:
+  - generic
+  - filter
+
+clone_cves: []
+# Reference set for SMM drivers is largely vendor-specific and not CVE-
+# indexed. Rely on string + import density until clones.json carries a
+# curated OEM-firmware subset.
+
+rank_weights:
+  must_have_one:    6
+  dangerous_imports: 3
+  ioctl_match:       3
+  device_match:      7   # vendor-named firmware devices are near-conclusive
+  string_match:      4
+  method_match:      2
+  clone_hit:         8
+
+l3_focus:
+  - handlers_dispatched_from_matching_ioctl
+  - functions_writing_port_B2_or_user_controlled_port
+  - functions_building_smm_communication_buffer
+
+taint_sinks:
+  - WRITE_PORT_UCHAR
+  - WRITE_PORT_USHORT
+  - WRITE_PORT_ULONG
+
+validation_expected:
+  - port_number_pinned_check
+  - smi_number_allowlist_check
+  - comm_buffer_integrity_check
+  - caller_privilege_check

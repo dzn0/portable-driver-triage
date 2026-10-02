@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "sha256": "aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb",
+    "imphash": "7f3ec1a2b3c4d5e6f7a8b9c0d1e2f304",
+    "tlsh": "T1A2B3C4D5E6F7A8B9C0D1E2F3A4B5C6D7E8F9A0B1C2D3E4F5A6B7C8D9E0F1A2B3C4D5E6",
+    "driver_file": "ocdriver.sys",
+    "product": "OverclockHelper",
+    "vendor": "ExampleVendor LLC",
+    "file_version": "2.1.4.0",
+    "arch": "x64",
+    "size_bytes": 185344,
+    "signature_status": "revoked",
+    "signer": "ExampleVendor LLC"
+  },
+  "run": {
+    "run_id": "20261001T191244Z-armemory",
+    "scope_profile": "arbitrary-physical-memory",
+    "pipeline_version": "v0.3.1",
+    "generated_at": "2026-10-01T19:12:44Z",
+    "flags": {
+      "signature": "was-valid-ever",
+      "clone_ref": "loldrivers@2026-09-15",
+      "l3_mode": "deep"
+    },
+    "bundle_path": "reports/aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb/20261001T191244Z-armemory/"
+  },
+  "signals": {
+    "scope_independent": {
+      "dangerous_imports": [
+        "MmMapIoSpace",
+        "MmUnmapIoSpace",
+        "ZwMapViewOfSection",
+        "__writecr3"
+      ],
+      "ioctl_methods": {
+        "METHOD_BUFFERED": 12,
+        "METHOD_IN_DIRECT": 0,
+        "METHOD_OUT_DIRECT": 0,
+        "METHOD_NEITHER": 3
+      },
+      "ioctl_codes": ["0x22e000", "0x22e004", "0x22e100"],
+      "device_names": ["\\\\Device\\\\OcDriver"],
+      "device_classes": ["generic", "memory"],
+      "interesting_strings": ["PhysicalMemory", "MappedSystemView"],
+      "clone_hits": [
+        {
+          "ref_id": "ene_sys",
+          "cve": "CVE-2020-14979",
+          "similarity": 0.83
+        }
+      ],
+      "scope_matches": [
+        {"scope": "arbitrary-physical-memory", "rank": 9},
+        {"scope": "msr-access", "rank": 4}
+      ]
+    },
+    "scope_dependent": {
+      "rank": 9,
+      "validation_gaps": 2,
+      "taint_sinks": 1,
+      "decompiled_funcs": 3,
+      "top_handler": {
+        "ioctl": "0x22e000",
+        "func_addr": "0x14000b1c0"
+      }
+    }
+  },
+  "evidence_pointers": {
+    "ai_bundle": "reports/aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb/20261001T191244Z-armemory/ai_bundle.md",
+    "scope_view": "reports/aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb/20261001T191244Z-armemory/scope_arbitrary-physical-memory.md",
+    "ioctls_json": "reports/aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb/20261001T191244Z-armemory/ioctls_scoped.json",
+    "findings_json": "reports/aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb/20261001T191244Z-armemory/findings.json",
+    "findings_md": "reports/aabbccdd11223344556677889900aabbccddeeff00112233445566778899aabb/20261001T191244Z-armemory/findings.md"
+  },
+  "top_findings_preview": [
+    {
+      "id": "F-001",
+      "confidence": "CONFIRMED",
+      "class": "arbitrary-physical-memory-read-write",
+      "title": "Unvalidated MmMapIoSpace reachable via IOCTL 0x22e000",
+      "severity_in_scope": "high"
+    }
+  ]
+}

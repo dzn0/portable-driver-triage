@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:portable-driver-triage:schema:findings:v1",
+  "title": "Portable Driver Triage — findings.json",
+  "description": "Written by the AI into reports/<sha256>/<run_id>/findings.json as the deliverable of a Mode A or Mode B deep analysis of one bundle. Companion findings.md is a human-readable rendering of the same content and is not schematized.",
+  "type": "object",
+  "required": ["schema_version", "driver_sha256", "scope", "agent", "generated_at", "findings", "out_of_scope", "unknowns"],
+  "additionalProperties": false,
+  "properties": {
+
+    "schema_version": {
+      "description": "Document schema version.",
+      "const": 1
+    },
+
+    "driver_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Must match the sha256 of the driver this bundle analyzes. The AI copies it from identity.json / the per-bundle AGENTS.md, never invents it."
+    },
+
+    "scope": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Active scope profile for this analysis. Must match the scope the bundle was produced under."
+    },
+
+    "agent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model identifier that produced this document, e.g. claude-opus-4-7, gpt-5, local-llama-70b. Free-form; used for provenance, not validation."
+    },
+
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "ISO-8601 UTC, must end with Z."
+    },
+
+    "findings": {
+      "type": "array",
+      "description": "Findings inside the active scope. Empty array is valid (the AI analyzed and found nothing in-scope that meets the citation bar).",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+
+    "out_of_scope": {
+      "type": "array",
+      "description": "Observations the AI considers worth surfacing but which fall outside the active scope profile. Same shape as findings. Never promote one of these into findings.",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+
+    "unknowns": {
+      "type": "array",
+      "description": "Things the bundle did not let the AI resolve. One short line each. Keeps the operator aware of gaps instead of letting the AI silently drop them.",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+
+  "$defs": {
+
+    "finding": {
+      "type": "object",
+      "required": ["id", "title", "class", "confidence", "severity_in_scope", "ioctl", "handler", "method", "call_chain", "primitive", "clone_evidence", "detection_ideas"],
+      "additionalProperties": false,
+      "properties": {
+
+        "id": {
+          "type": "string",
+          "pattern": "^F-\\d{3,}$",
+          "description": "F-001, F-002, … Zero-padded, monotonic within the document."
+        },
+
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Short, imperative, factual. No clickbait, no severity words baked into the title."
+        },
+
+        "class": {
+          "description": "Closed vocabulary. If none fit, use 'other' and explain in notes_for_human. New classes require a schema_version bump.",
+          "enum": [
+            "arbitrary-physical-memory-read-write",
+            "arbitrary-virtual-memory-read-write",
+            "msr-read",
+            "msr-write",
+            "cr-register-write",
+            "io-port-access",
+            "input-injection",
+            "token-manipulation",
+            "process-handle-abuse",
+            "smi-trigger",
+            "raw-disk-io",
+            "firmware-flash",
+            "dse-bypass",
+            "asm-pseudo-c-mismatch",
+            "other"
+          ]
+        },
+
+        "confidence": {
+          "enum": ["CONFIRMED", "PLAUSIBLE"],
+          "description": "CONFIRMED: traced end-to-end through pseudo-C and (where applicable) verified in disasm_full.txt. PLAUSIBLE: pattern/heuristic matched (clone, missing probe, dangerous import reachable) but the path was not fully traced in-bundle."
+        },
+
+        "severity_in_scope": {
+          "enum": ["critical", "high", "medium", "low"],
+          "description": "Severity relative to the active scope. A critical input-injection finding may be unrelated to the stakes of an arbitrary-memory scope and vice versa."
+        },
+
+        "ioctl": {
+          "oneOf": [
+            { "type": "string", "pattern": "^0x[a-f0-9]{1,8}$" },
+            { "type": "null" }
+          ],
+          "description": "IOCTL code the finding is anchored to. Null when the finding is driver-wide rather than per-IOCTL."
+        },
+
+        "handler": {
+          "oneOf": [
+            { "type": "string", "pattern": "^0x[a-f0-9]+$" },
+            { "type": "null" }
+          ],
+          "description": "Function address of the handler. Null when the finding is not located in a specific function."
+        },
+
+        "method": {
+          "oneOf": [
+            { "enum": ["METHOD_BUFFERED", "METHOD_IN_DIRECT", "METHOD_OUT_DIRECT", "METHOD_NEITHER"] },
+            { "type": "null" }
+          ],
+          "description": "IOCTL buffering method for the handler. Null when ioctl is null or the method could not be resolved."
+        },
+
+        "call_chain": {
+          "type": "array",
+          "minItems": 1,
+          "description": "At least one citation. Every entry must point to a file inside the bundle and a line that actually contains the referenced construct. The whole document is rejected if any finding has an empty call_chain.",
+          "items": {
+            "type": "object",
+            "required": ["file", "line", "note"],
+            "additionalProperties": false,
+            "properties": {
+              "file": { "type": "string", "minLength": 1, "description": "Path relative to the bundle directory (where findings.json lives). Shared L1/L2 artifacts are reached via ../ (e.g., ../disasm_full.txt). Run-local artifacts are relative (e.g., l3_decomp/0x14000b1c0.c)." },
+              "line": { "type": "integer", "minimum": 1 },
+              "note": { "type": "string", "minLength": 1, "maxLength": 300, "description": "One short sentence stating what the cited line shows." }
+            }
+          }
+        },
+
+        "primitive": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "One or two sentences stating the capability granted by the finding, in operational terms (what the caller controls, what the driver does with it, what the result is). Never a weaponization recipe."
+        },
+
+        "clone_evidence": {
+          "description": "Clone-detection evidence tying this finding to a known-vulnerable driver. Null when the finding is independent of any clone hit.",
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["ref", "similarity", "source"],
+              "additionalProperties": false,
+              "properties": {
+                "ref": {
+                  "anyOf": [
+                    { "type": "string", "pattern": "^CVE-\\d{4}-\\d{4,}$" },
+                    { "type": "string", "minLength": 1 },
+                    { "type": "null" }
+                  ],
+                  "description": "CVE id when available (preferred when the match corresponds to one), otherwise the ref_id from the clone_hits entry in the bundle, or null."
+                },
+                "similarity": { "type": "number", "minimum": 0, "maximum": 1 },
+                "source":     { "type": "string", "minLength": 1, "description": "Path + anchor into the clone evidence file, e.g. l3_decomp/clones.json#ene_sys" }
+              }
+            }
+          ]
+        },
+
+        "detection_ideas": {
+          "type": "array",
+          "description": "Free-form strings. Each one a concrete detection suggestion a defender could implement (YARA rule hint, EDR signal, Sigma rule sketch, oncall query, …). Keep each item one line.",
+          "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+        },
+
+        "notes_for_human": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Optional. Omit the field entirely if nothing to add. Use for caveats, decompiler artifacts worth flagging, or ambiguities the operator should know about."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:portable-driver-triage:schema:scope_profile:v1",
+  "title": "Portable Driver Triage — scope profile",
+  "description": "Formal shape of a YAML file under scope_profiles/. Each profile declares a vulnerability-class hunt: what the L1 pipeline looks for, how it ranks hits, what deep-analysis focus it hands to L3, and which handler-side checks the L3 validation-gap detector should expect.",
+  "type": "object",
+  "required": [
+    "name", "short_name", "description", "severity_prior",
+    "imports_of_interest", "methods_of_interest", "ioctl_patterns",
+    "device_name_patterns", "strings_of_interest", "device_classes_of_interest",
+    "clone_cves", "rank_weights", "l3_focus", "taint_sinks", "validation_expected"
+  ],
+  "additionalProperties": false,
+  "properties": {
+
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Stable identifier. Must equal the filename stem (<name>.yaml). Appears verbatim in index.jsonl at run.scope_profile and in scope_matches[].scope."
+    },
+
+    "short_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+$",
+      "maxLength": 10,
+      "description": "Short tag used as <scope-short> in run_id (see schemas/index_row.schema.json). ≤ 10 chars, lowercase alphanumeric only."
+    },
+
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+
+    "severity_prior": {
+      "enum": ["critical", "high", "medium", "low"],
+      "description": "Operator's expectation when the profile fires. Informs severity_in_scope in AI findings but does not constrain it."
+    },
+
+    "imports_of_interest": {
+      "type": "object",
+      "required": ["must_have_one", "weight_each"],
+      "additionalProperties": false,
+      "properties": {
+        "must_have_one": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "GATE. The profile does not fire for a driver unless it imports at least one of these. Keeps the index clean of noise."
+        },
+        "weight_each": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Each hit adds rank_weights.dangerous_imports to the overall rank. Empty array is valid."
+        }
+      }
+    },
+
+    "methods_of_interest": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["METHOD_BUFFERED", "METHOD_IN_DIRECT", "METHOD_OUT_DIRECT", "METHOD_NEITHER"]
+      },
+      "description": "IOCTL dispatch methods. Convention: list worst-first (METHOD_NEITHER usually first)."
+    },
+
+    "ioctl_patterns": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "format": "regex",
+        "minLength": 1
+      },
+      "description": "Python-regex patterns applied to normalized IOCTL strings in the form 0xHHHHHHHH, lowercase hex. Empty array is valid when the profile does not restrict by IOCTL range."
+    },
+
+    "device_name_patterns": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "format": "regex",
+        "minLength": 1
+      },
+      "description": "Python-regex patterns applied to \\\\Device\\\\... names found in L1. Empty array is valid when device names are weak signal for this class (e.g., process-token-manipulation)."
+    },
+
+    "strings_of_interest": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Substrings for scope-level string matching (on top of what L1 already extracts into interesting_strings). Case-insensitive, matched against both ASCII and UTF-16LE decodes."
+    },
+
+    "device_classes_of_interest": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["hid", "input", "disk", "net", "process", "memory", "msr", "gpu", "usb", "filter", "generic"]
+      },
+      "description": "Subset of the closed device_classes vocabulary (see schemas/index_row.schema.json and refs/device_classes.yaml). Must stay in sync with that enum — if a new class is added there, bump this file too."
+    },
+
+    "clone_cves": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^CVE-\\d{4}-\\d{4,}$"
+      },
+      "description": "CVEs whose reference snippets, if matched by L3 clone-detection, bump the rank sharply. Empty array is valid — not every class has indexed CVEs (e.g., hid-input-control, smm-smi)."
+    },
+
+    "rank_weights": {
+      "type": "object",
+      "required": [
+        "must_have_one", "dangerous_imports", "ioctl_match",
+        "device_match", "string_match", "method_match", "clone_hit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "must_have_one":     { "type": "integer", "minimum": 0 },
+        "dangerous_imports": { "type": "integer", "minimum": 0 },
+        "ioctl_match":       { "type": "integer", "minimum": 0 },
+        "device_match":      { "type": "integer", "minimum": 0 },
+        "string_match":      { "type": "integer", "minimum": 0 },
+        "method_match":      { "type": "integer", "minimum": 0 },
+        "clone_hit":         { "type": "integer", "minimum": 0 }
+      },
+      "description": "Multipliers used by the additive ranking formula. All seven keys required. Negative weights are not allowed — a profile cannot penalize a signal. See docs/ranking.md for the exact formula."
+    },
+
+    "l3_focus": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "minLength": 1,
+            "description": "Bare selector name. See docs/l3_focus_selectors.md for the vocabulary and which selectors are generic (interpreted by the pipeline core) versus profile-specific (require dedicated L3 code)."
+          },
+          {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Parameterized selector of the form {selector_name: parameter_reference}. The parameter typically names another top-level field on this profile (e.g., taint_sinks)."
+          }
+        ]
+      },
+      "description": "Hints the L3 function gate uses to decide which handlers get full pseudo-C decompilation. Mix of generic selectors (interpreted by the pipeline) and profile-specific heuristics (require dedicated L3 code). Unimplemented heuristics degrade gracefully — the pipeline runs the generic selectors and logs the unimplemented ones in the bundle's summary.md."
+    },
+
+    "taint_sinks": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Sinks the L3 taint pass must reach from a user-controlled source for the handler to be reported as confirmed-primitive. Symbol names as they appear in the import table or (for intrinsics) in the mnemonic scan."
+    },
+
+    "validation_expected": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Named checks the handler should perform on user input before granting the capability. Vocabulary is documented in docs/validation_checks.md; entries not backed by an L3 detector are silently ignored (reported in summary.md as 'detector not implemented')."
+    }
+  }
+}

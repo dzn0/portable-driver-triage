@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:portable-driver-triage:schema:index_row:v1",
+  "title": "Portable Driver Triage — index.jsonl row",
+  "description": "One JSON document per line in reports/index.jsonl. Represents a single analysis run (sha256 × scope × run_id), append-only, never mutated. Readers deduplicate by (identity.sha256, run.scope_profile) and pick the most recent run.generated_at.",
+  "type": "object",
+  "required": ["schema_version", "identity", "run", "signals", "evidence_pointers", "top_findings_preview"],
+  "additionalProperties": false,
+  "properties": {
+
+    "schema_version": {
+      "description": "Row schema version. Pipeline upgrades bump this; readers may skip or down-convert older rows during a migration window.",
+      "const": 1
+    },
+
+    "identity": {
+      "description": "Facts that depend only on the binary. Repeated across all analyses of the same sha256 so rows stay self-contained.",
+      "type": "object",
+      "required": ["sha256", "imphash", "tlsh", "driver_file", "product", "vendor", "file_version", "arch", "size_bytes", "signature_status", "signer"],
+      "additionalProperties": false,
+      "properties": {
+        "sha256":           { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "imphash":          { "type": "string", "pattern": "^[a-f0-9]{32}$" },
+        "tlsh":             { "type": ["string", "null"], "pattern": "^T1[A-F0-9]{70}$", "description": "Null is legitimate — TLSH fails on small inputs." },
+        "driver_file":      { "type": "string", "minLength": 1, "description": "Original filename of the .sys as extracted from the installer." },
+        "product":          { "type": ["string", "null"], "description": "From PE VS_VERSION_INFO. Null when absent (not empty string)." },
+        "vendor":           { "type": ["string", "null"], "description": "From PE VS_VERSION_INFO. Null when absent." },
+        "file_version":     { "type": ["string", "null"], "description": "From PE VS_VERSION_INFO. Null when absent." },
+        "arch":             { "enum": ["x86", "x64", "arm64"] },
+        "size_bytes":       { "type": "integer", "minimum": 1 },
+        "signature_status": {
+          "enum": ["unsigned", "valid", "valid-whql", "expired", "revoked", "invalid"],
+          "description": "Status at the moment of collection. `was-valid-ever` is NOT a status — it is a filter flag applied at L0, see run.flags.signature."
+        },
+        "signer":           { "type": ["string", "null"], "description": "Leaf signer name, informational. Null when unsigned or unresolvable." }
+      }
+    },
+
+    "run": {
+      "description": "Metadata of this specific analysis run.",
+      "type": "object",
+      "required": ["run_id", "scope_profile", "pipeline_version", "generated_at", "flags", "bundle_path"],
+      "additionalProperties": false,
+      "properties": {
+        "run_id":           { "type": "string", "pattern": "^\\d{8}T\\d{6}Z-[a-z0-9-]+$", "description": "<YYYYMMDDTHHMMSS>Z-<scope-short>" },
+        "scope_profile":    { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "Name of a scope profile under scope_profiles/." },
+        "pipeline_version": { "type": "string", "pattern": "^v\\d+\\.\\d+\\.\\d+$" },
+        "generated_at":     { "type": "string", "format": "date-time", "pattern": "Z$", "description": "ISO-8601 UTC, must end with Z." },
+        "flags": {
+          "description": "Flags that affected interpretation. Documented keys below; additional keys allowed as the pipeline evolves.",
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "signature": { "enum": ["any", "was-valid-ever", "valid-now"], "description": "L0 signature filter policy chosen for this run." },
+            "clone_ref": { "type": "string", "description": "Reference set used for clone detection, e.g. 'loldrivers@2026-09-15'." },
+            "l3_mode":   { "enum": ["deep", "shallow"], "description": "Whether L3 decompilation ran in deep (per-function pseudo-C) or shallow (handler summaries only) mode." }
+          }
+        },
+        "bundle_path":      { "type": "string", "pattern": "^reports/[a-f0-9]{64}/\\d{8}T\\d{6}Z-[a-z0-9-]+/$", "description": "Relative to the project root, always ends with /." }
+      }
+    },
+
+    "signals": {
+      "description": "Triage-ready signals. Split by whether they depend on the active scope profile.",
+      "type": "object",
+      "required": ["scope_independent", "scope_dependent"],
+      "additionalProperties": false,
+      "properties": {
+
+        "scope_independent": {
+          "description": "Computed in L1 regardless of the active scope. These are what let Mode C triage questions find candidates across the whole corpus, even when individual rows were produced under a different scope.",
+          "type": "object",
+          "required": ["dangerous_imports", "ioctl_methods", "ioctl_codes", "device_names", "device_classes", "interesting_strings", "clone_hits", "scope_matches"],
+          "additionalProperties": false,
+          "properties": {
+            "dangerous_imports": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string" },
+              "description": "Sorted, unique. Matched against refs/dangerous_imports.yaml."
+            },
+            "ioctl_methods": {
+              "type": "object",
+              "required": ["METHOD_BUFFERED", "METHOD_IN_DIRECT", "METHOD_OUT_DIRECT", "METHOD_NEITHER"],
+              "additionalProperties": false,
+              "properties": {
+                "METHOD_BUFFERED":   { "type": "integer", "minimum": 0 },
+                "METHOD_IN_DIRECT":  { "type": "integer", "minimum": 0 },
+                "METHOD_OUT_DIRECT": { "type": "integer", "minimum": 0 },
+                "METHOD_NEITHER":    { "type": "integer", "minimum": 0 }
+              },
+              "description": "All four keys always present (0 when the method is absent) so query predicates are predictable."
+            },
+            "ioctl_codes": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^0x[a-f0-9]{1,8}$" }
+            },
+            "device_names": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string" },
+              "description": "Device objects created or referenced by the driver (e.g., \\\\Device\\\\OcDriver)."
+            },
+            "device_classes": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "enum": ["hid", "input", "disk", "net", "process", "memory", "msr", "gpu", "usb", "filter", "generic"] },
+              "description": "Closed vocabulary. New classes require a schema_version bump."
+            },
+            "interesting_strings": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string" },
+              "description": "Hits from refs/interesting_strings.yaml — meaningful substrings found in the binary."
+            },
+            "clone_hits": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["ref_id", "cve", "similarity"],
+                "additionalProperties": false,
+                "properties": {
+                  "ref_id":     { "type": "string", "description": "Identifier in the known-vulnerable reference set." },
+                  "cve":        { "type": ["string", "null"], "pattern": "^CVE-\\d{4}-\\d{4,}$", "description": "Null when the referenced driver has no public CVE." },
+                  "similarity": { "type": "number", "minimum": 0, "maximum": 1 }
+                }
+              }
+            },
+            "scope_matches": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["scope", "rank"],
+                "additionalProperties": false,
+                "properties": {
+                  "scope": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+                  "rank":  { "type": "integer", "minimum": 0 }
+                }
+              },
+              "description": "All scope profiles whose baseline fingerprint matches this driver, with the rank computed from each profile's rank_weights. This is what makes cross-scope triage possible."
+            }
+          }
+        },
+
+        "scope_dependent": {
+          "description": "Deep-analysis facts for THIS run's scope only. Always present; counts may be zero if the gate filtered everything.",
+          "type": "object",
+          "required": ["rank", "validation_gaps", "taint_sinks", "decompiled_funcs", "top_handler"],
+          "additionalProperties": false,
+          "properties": {
+            "rank":             { "type": "integer", "minimum": 0, "description": "Rank for run.scope_profile. Redundant with the matching scope_matches entry on purpose, for direct querying." },
+            "validation_gaps":  { "type": "integer", "minimum": 0 },
+            "taint_sinks":      { "type": "integer", "minimum": 0 },
+            "decompiled_funcs": { "type": "integer", "minimum": 0 },
+            "top_handler": {
+              "type": ["object", "null"],
+              "required": ["ioctl", "func_addr"],
+              "additionalProperties": false,
+              "properties": {
+                "ioctl":     { "type": "string", "pattern": "^0x[a-f0-9]{1,8}$" },
+                "func_addr": { "type": "string", "pattern": "^0x[a-f0-9]+$" }
+              },
+              "description": "Highest-ranked handler. Null when no handler survived the function gate."
+            }
+          }
+        }
+      }
+    },
+
+    "evidence_pointers": {
+      "description": "Relative paths (from project root) to the key artifacts of this bundle. findings_json / findings_md are written here by the AI; the paths are pre-filled so the AI knows exactly where to drop them.",
+      "type": "object",
+      "required": ["ai_bundle", "scope_view", "ioctls_json", "findings_json", "findings_md"],
+      "additionalProperties": false,
+      "properties": {
+        "ai_bundle":     { "type": "string" },
+        "scope_view":    { "type": "string" },
+        "ioctls_json":   { "type": "string" },
+        "findings_json": { "type": "string", "description": "Path where the AI's findings.json will be written. May not exist on disk yet." },
+        "findings_md":   { "type": "string", "description": "Path where the AI's findings.md will be written. May not exist on disk yet." }
+      }
+    },
+
+    "top_findings_preview": {
+      "description": "Preview of the AI's own findings for this bundle, if findings.json exists. Null when the AI has not yet analyzed this bundle. Lets a Mode C triage AI see the verdict of a previous deep pass without opening findings.json.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "required": ["id", "confidence", "class", "title"],
+            "additionalProperties": false,
+            "properties": {
+              "id":                { "type": "string", "pattern": "^F-\\d{3,}$" },
+              "confidence":        { "enum": ["CONFIRMED", "PLAUSIBLE"] },
+              "class":             { "type": "string" },
+              "title":             { "type": "string", "maxLength": 160 },
+              "severity_in_scope": { "enum": ["critical", "high", "medium", "low"] }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

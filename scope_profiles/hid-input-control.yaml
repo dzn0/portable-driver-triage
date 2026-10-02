@@ -1,0 +1,97 @@
+# scope_profiles/hid-input-control.yaml
+#
+# Hunts drivers that can inject or capture HID / mouse / keyboard events on
+# behalf of a usermode caller, OR expose a generic IOCTL surface over an
+# input-class device object. The second half is where the BYOVD interest is:
+# a driver that is "just" a mouse configurator but also offers an unchecked
+# memory-mapping IOCTL inherits the input vendor's codesigning and dwells
+# unnoticed on hundreds of thousands of gamer PCs.
+#
+# Reference incidents: Razer Synapse elevation chain, several Corsair /
+# SteelSeries configurators, and the long tail of keyboard-macro utilities.
+# This profile is intentionally broader than "classic BYOVD" — it's about
+# surface, not about guaranteed primitives.
+
+name:          hid-input-control
+short_name:    hidctrl
+description:   Driver exposes HID, keyboard, or pointer input manipulation to usermode, or carries an input-class device with a general-purpose IOCTL surface.
+severity_prior: high
+
+imports_of_interest:
+  must_have_one:
+    - HidRegisterMinidriver
+    - HidNotifyPresence
+    - HidP_GetCaps
+    - IoAttachDeviceToDeviceStack
+  weight_each:
+    - HidP_GetUsages
+    - IoReportDetectedDevice
+    - IoRegisterDeviceInterface
+    - KeInsertQueueApc    # input-injection drivers sometimes marshal through APCs
+
+methods_of_interest:
+  - METHOD_NEITHER
+  - METHOD_IN_DIRECT
+  - METHOD_OUT_DIRECT
+  - METHOD_BUFFERED
+
+ioctl_patterns:
+  - '^0xb[0-9a-f]{4}$'     # FILE_DEVICE_KEYBOARD / MOUSE / HID clusters
+  - '^0x22[0-9a-f]{4}$'    # also catch generic FILE_DEVICE_UNKNOWN exposure over an input device
+
+device_name_patterns:
+  - '^\\\\Device\\\\Hid'
+  - '^\\\\Device\\\\KeyboardClass'
+  - '^\\\\Device\\\\PointerClass'
+  - '^\\\\Device\\\\Kbd'
+  - '^\\\\Device\\\\Mou'
+
+strings_of_interest:
+  - Kbdclass
+  - Mouclass
+  - HidClass
+  - HidP
+  - Mouhid
+  - Kbdhid
+  - \Device\KeyboardClass
+  - \Device\PointerClass
+  - \Device\Hid
+
+device_classes_of_interest:
+  - hid
+  - input
+
+clone_cves: []   # No single canonical CVE; profile relies on signal density.
+
+rank_weights:
+  must_have_one:    6
+  dangerous_imports: 2
+  ioctl_match:       4
+  device_match:      5
+  string_match:      3
+  method_match:      2
+  clone_hit:         6
+
+l3_focus:
+  - handlers_dispatched_from_matching_ioctl
+  - functions_calling_any_of_must_have_one
+  - handlers_on_input_class_devices_with_METHOD_NEITHER
+
+taint_sinks:
+  # For this profile the sinks are not just dangerous kernel APIs — any
+  # IOCTL on an input-class device that reaches a memory/MSR/physical sink
+  # is the finding. The L3 pass should walk ../.. up the call chain from
+  # these sinks and flag reach from any input-class dispatch handler.
+  - MmMapIoSpace
+  - MmMapLockedPages
+  - __writemsr
+  - __writecr0
+  - __writecr4
+  - MmCopyMemory
+  - ZwMapViewOfSection
+
+validation_expected:
+  - ProbeForRead
+  - ProbeForWrite
+  - caller_session_check
+  - input_length_check
