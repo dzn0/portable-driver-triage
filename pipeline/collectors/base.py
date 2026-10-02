@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from .. import __version__ as PIPELINE_VERSION
 from .. import config
+from .. import progress
 from . import _common as C
 
 
@@ -63,8 +64,10 @@ class Collector:
             "error": None,
         }
         try:
+            progress.report("resolving source URL")
             info = self.discover()
             manifest["discovery"] = info
+            progress.report("acquiring")
             drivers = self.acquire(work_dir, info)
             # Bubble per-collector downloads up to the top-level manifest so the
             # adapter has one canonical place to look.

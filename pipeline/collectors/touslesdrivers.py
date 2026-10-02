@@ -15,7 +15,7 @@ class TousLesDriversCollector(SimpleArchiveCollector):
     discovery_page = "https://www.touslesdrivers.com/"
     installer_url = ("https://us.download.nvidia.com/Windows/nForce/15.26/"
                      "15.26_nforce_winxp32_international_whql.exe")
-    max_mb = 120
+    max_mb = 200  # the nForce 15.26 international WHQL installer is ~158 MB
 
 
 def collector() -> TousLesDriversCollector:

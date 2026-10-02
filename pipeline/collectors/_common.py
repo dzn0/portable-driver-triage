@@ -14,14 +14,18 @@ import json
 import shutil
 import struct
 import subprocess
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from .. import config
+from .. import progress
 
-CREATE_NO_WINDOW = 0x08000000  # keep subprocess silent on Windows
+# keep subprocess silent on Windows; 0 is a no-op (and the only valid value)
+# on non-Windows platforms, where passing creationflags at all is an error.
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 UA = "Mozilla/5.0 PortableDriverTriage/0.1"
 MAGIC = {
     ".exe": b"MZ",
@@ -96,24 +100,38 @@ def download(
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(target.suffix + ".part")
 
+    fname = Path(urlparse(url).path).name or "download"
     try:
         req = Request(url, headers={"User-Agent": UA})
         with urlopen(req, timeout=timeout) as r:
             _host_allowed(r.geturl(), allowed_hosts)
             final_url = r.geturl()
+            clen = (r.headers.get("Content-Length") or "").strip()
+            total_mb = int(clen) / (1 << 20) if clen.isdigit() else None
             written = 0
+            last = 0.0
             with partial.open("wb") as f:
                 while chunk := r.read(1 << 20):
                     written += len(chunk)
                     if written > max_mb * (1 << 20):
                         raise ValueError("Download exceeds size limit")
                     f.write(chunk)
+                    now = time.monotonic()
+                    if now - last > 0.2:
+                        mb = written / (1 << 20)
+                        bar = f"{mb:.0f}/{total_mb:.0f} MB" if total_mb else f"{mb:.0f} MB"
+                        progress.report(f"downloading {fname} · {bar}")
+                        last = now
         _validate_magic(partial)
         partial.replace(target)
     except Exception as exc:
         partial.unlink(missing_ok=True)
+        progress.report(f"downloading {fname} · curl fallback")
+        curl = shutil.which("curl.exe") or shutil.which("curl")
+        if not curl:
+            raise RuntimeError(f"urllib: {exc}; curl not found on PATH") from exc
         cmd = [
-            "curl.exe", "--ipv4", "--location", "--fail", "--silent", "--show-error",
+            curl, "--ipv4", "--location", "--fail", "--silent", "--show-error",
             "--proto", "=https", "--proto-redir", "=https",
             "--connect-timeout", "20",
             "--max-time", str(max(90, timeout * 3)),
@@ -150,6 +168,7 @@ def download(
 
 def extract(package: Path, destination: Path, timeout: int = 240) -> dict:
     destination.mkdir(parents=True, exist_ok=True)
+    progress.report(f"extracting {package.name}")
     r = subprocess.run(
         [str(config.sevenzip()), "x", str(package), "-o" + str(destination), "-y", "-bd"],
         capture_output=True, text=True, errors="replace",
@@ -172,6 +191,7 @@ def extract_pe_resources(package: Path, destination: Path, timeout: int = 180) -
     PE view with `-tPE` does. Pair with `collect_sys_files(include_native_pe=True)`
     to recover the driver by content."""
     destination.mkdir(parents=True, exist_ok=True)
+    progress.report(f"extracting PE resources {package.name}")
     r = subprocess.run(
         [str(config.sevenzip()), "x", "-tPE", str(package),
          "-o" + str(destination), "-y", "-bd"],
@@ -281,9 +301,11 @@ def collect_sys_files(
             if ident and ident.get("native"):
                 candidates.append(p)
     files = sorted(candidates)
+    progress.report(f"scanning {len(files)} candidate(s) for drivers")
     rows: list[dict] = []
     seen: set[str] = set()
     for p in files:
+        progress.report(f"hashing {p.name}")
         digest = sha256_file(p)
         if digest in seen:
             continue
