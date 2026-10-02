@@ -1,12 +1,43 @@
 # Portable Driver Triage
 
-Static-analysis pipeline for Bring-Your-Own-Vulnerable-Driver (BYOVD) research. It
-collects real Windows kernel drivers from their original vendors, extracts the ones
-buried inside installers, and pre-computes a layered static analysis so an AI (or a
-human) starts from structured facts instead of raw bytes.
+**Static BYOVD triage pipeline for Windows kernel drivers — collect, analyze, and hand
+off to an AI, offline in one Docker image. Nothing is ever executed.**
 
-Runs fully offline in a single zero-config Docker image. **No driver is ever
-executed** — every `.sys` is parsed as bytes.
+It collects real Windows kernel drivers from their original vendors, extracts the ones
+buried inside installers, and pre-computes a layered static analysis so an LLM starts
+from structured facts instead of raw bytes — then drives the rest of the pipeline
+itself, as a CLI.
+
+> **Built on [DrvEye](https://github.com/0xDbgMan/DrvEye)** (MIT, by 0xDbgMan). DrvEye
+> does the hard static-analysis work — PE parsing, Authenticode, IOCTL discovery,
+> taint, exploit-primitive classification. This project vendors it as the L0→L3+
+> engine and adds the two layers it doesn't cover: real-world **vendor-driver
+> collection** and an **AI-handoff contract**. See [Credits](#credits).
+
+Every `.sys` is parsed as bytes — the pipeline is static-only and runs fully offline
+after the image is pulled.
+
+---
+
+## Designed for an LLM to drive as a CLI
+
+This is the core idea. The pipeline doesn't just dump a report for a human to read —
+it's shaped so an AI agent **operates it from the command line** and produces cited
+findings on its own:
+
+- It reads a single contract ([`AGENTS.md`](AGENTS.md)) that modern agents (Claude
+  Code, Codex, Cursor) auto-discover, and that tells it exactly which artifacts to open
+  and in what order.
+- It triages the whole corpus from **one index file** (`reports/index.jsonl`) — no
+  walking the bundle tree — then opens only the handful of bundles worth deep analysis.
+- It **runs the pipeline itself**: when it needs pseudo-C for a function it's about to
+  cite, it invokes `pipeline.decompile <sha256> <addr>` on demand, materializing the
+  decompilation lazily instead of paying to decompile every driver up front.
+- Every claim it writes into `findings.json` must cite a real line in the bundle
+  ([`AGENTS.md`](AGENTS.md) §6) — the contract makes uncited analysis fail.
+
+The [Quick start](#quick-start) below is the human entry point; the
+[Point an AI at the results](#point-an-ai-at-the-results) section is the agent one.
 
 ---
 
@@ -46,22 +77,17 @@ rebuilds — the image carries only code, never data. See
 
 ## Point an AI at the results
 
-The pipeline's whole purpose is to hand pre-digested facts to an AI. The contract
-lives in [`AGENTS.md`](AGENTS.md); modern agents (Claude Code, Codex, Cursor) discover
-it automatically. Three ways to use it:
+Open an AI agent at the repo root; it finds [`AGENTS.md`](AGENTS.md) and follows the
+contract. Three ways to invoke it:
 
-- **Mass triage** (the common case) — from the repo root, ask a capability question:
-  *"which drivers allow arbitrary physical I/O?"* The AI reads one index file
-  (`reports/index.jsonl`), filters, ranks, and only then opens the handful of bundles
-  that matter.
-- **Deep analysis** — point the AI at one bundle
-  (`reports/<sha256>/<run_id>/`) and ask it to analyze. It produces a cited
-  `findings.json` + `findings.md`.
-- **On demand** — during analysis the AI runs `pipeline.decompile` itself to get
-  pseudo-C for any function it's about to cite.
-
-Every claim in a finding must cite a real line in the bundle — see
-[`AGENTS.md`](AGENTS.md) §6.
+- **Mass triage** (the common case) — ask a capability question: *"which drivers allow
+  arbitrary physical I/O?"* The agent reads `reports/index.jsonl`, filters, ranks, and
+  only then opens the handful of bundles that matter.
+- **Deep analysis** — point it at one bundle (`reports/<sha256>/<run_id>/`). It reads
+  the facts, runs `pipeline.decompile` for any function it needs pseudo-C on, and writes
+  a cited `findings.json` + `findings.md`.
+- **Operator-assisted** — you drive `collect` / `analyze` from the shell (the
+  [Quick start](#quick-start)); the agent takes over at the findings step.
 
 ---
 
@@ -117,16 +143,13 @@ disposable isolated VM.
 
 ## How it works
 
-The heavy static-analysis engine (PE parsing, Authenticode, IOCTL discovery, taint,
-exploit-primitive classification) is **not reinvented** here — the project vendors
-[DrvEye](https://github.com/0xDbgMan/DrvEye) (MIT) as its L0→L3+ engine and owns the
-two layers DrvEye doesn't provide: **real-world vendor-driver collection** and the
-**AI-handoff contract** (scope profiles, per-bundle `AGENTS.md`, the `index.jsonl`
-triage index, cited `findings.json`).
+DrvEye is the L0→L3+ engine (see the note at the top); this project owns the collectors
+that feed it and the adapter that reshapes its JSON into the AI-handoff bundle (scope
+profiles, per-bundle `AGENTS.md`, the `index.jsonl` triage index, cited `findings.json`).
 
 The full rationale, the layered L0→L3+ methodology, the collector catalog, and the
-implementation status all live in **[docs/DESIGN.md](docs/DESIGN.md)**.
-Vendor source catalog: **[SOURCES.md](SOURCES.md)**.
+implementation status live in **[docs/DESIGN.md](docs/DESIGN.md)**. Vendor source
+catalog: **[SOURCES.md](SOURCES.md)**.
 
 ## Credits
 
