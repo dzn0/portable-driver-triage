@@ -51,11 +51,14 @@ engine are all baked into the image.
 # build the image once (includes headless Chromium for the catalog collector)
 docker compose build
 
-# 1. collect — enumerate the Microsoft Update Catalog (needs network).
+# 1. collect — run every registered source (needs network).
 #    No --scope → a broad sweep across device classes ("collect anything").
-docker compose run --rm collect pipeline.collect msupdate-catalog
+docker compose run --rm collect pipeline.collect --all
+#    ...or pick one source by name (see --list):
+docker compose run --rm collect pipeline.collect samlab
 #    ...or narrow the SEARCH with a scope (profile name/short_name, or a free
-#    term). This is the collection-time half of the scope vocabulary:
+#    term) — the collection-time half of the scope vocabulary, honored by the
+#    scope-aware catalog source:
 docker compose run --rm collect pipeline.collect msupdate-catalog --scope hid-input-control
 docker compose run --rm collect pipeline.collect msupdate-catalog --scope network
 

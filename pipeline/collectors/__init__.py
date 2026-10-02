@@ -15,15 +15,27 @@ from __future__ import annotations
 from typing import Callable
 
 from .base import Collector
+from .archiveorg import collector as _archiveorg
+from .cpuid import collector as _cpuid
+from .dell import collector as _dell
 from .driverscollection import collector as _driverscollection
 from .msupdate import collector as _msupdate
+from .rweverything import collector as _rweverything
 from .samlab import collector as _samlab
+from .techpowerup import collector as _techpowerup
+from .touslesdrivers import collector as _touslesdrivers
 
 
 REGISTRY: dict[str, Callable[[], Collector]] = {
     "msupdate-catalog": _msupdate,
     "driverscollection": _driverscollection,
     "samlab": _samlab,
+    "archiveorg": _archiveorg,
+    "dell": _dell,
+    "techpowerup": _techpowerup,
+    "cpuid": _cpuid,
+    "rweverything": _rweverything,
+    "touslesdrivers": _touslesdrivers,
 }
 
 

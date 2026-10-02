@@ -122,11 +122,12 @@ def _render(prog: _Progress, frame: int, started: float) -> list[str]:
             detail = r["detail"] or "collecting…"
             glyph, text = f"{_CYAN}{spin}{_RESET}", f"{_DIM}{_clip(detail, detail_w)}{_RESET}"
         elif r["status"] == "success":
-            glyph, text = f"{_GREEN}✔{_RESET}", f"{_GREEN}success{_RESET}"
+            glyph, text = f"{_GREEN}⠿{_RESET}", f"{_GREEN}success{_RESET}"
         elif r["status"] == "failed":
-            glyph, text = f"{_RED}✖{_RESET}", f"{_RED}failed{_RESET} {_DIM}{r['error'][:48]}{_RESET}"
+            glyph, text = f"{_RED}⠿{_RESET}", f"{_RED}failed{_RESET} {_DIM}{r['error'][:48]}{_RESET}"
         else:  # no_driver_extracted and any other non-failure terminal status
-            glyph, text = f"{_YELLOW}⚠{_RESET}", f"{_YELLOW}{r['status']}{_RESET}"
+            label = (r["status"] or "").replace("_", " ")
+            glyph, text = f"{_YELLOW}⠿{_RESET}", f"{_YELLOW}{label}{_RESET}"
         lines.append(f" {glyph} {name:<{_NAME_W}} {cnt} {text}  {_DIM}{_elapsed(r):>6}{_RESET}")
     return lines
 
@@ -223,8 +224,9 @@ def main(argv: list[str] | None = None) -> int:
                          "query). Narrows what scope-aware collectors search for. "
                          "Omit for a broad default sweep.")
     ap.add_argument("--list", action="store_true", help="list registered collectors and exit")
-    ap.add_argument("-j", "--jobs", type=int, default=4,
-                    help="max collectors to run concurrently (default: 4; 1 = serial)")
+    ap.add_argument("-j", "--jobs", type=int, default=0,
+                    help="max collectors to run concurrently (default: 0 = all "
+                         "targets at once; 1 = serial)")
     ap.add_argument("--no-progress", action="store_true",
                     help="force plain line output even on a TTY")
     args = ap.parse_args(argv)
@@ -248,7 +250,8 @@ def main(argv: list[str] | None = None) -> int:
               + (f", categories={scope_search['categories']}" if scope_search['categories'] else "")
               + ")")
 
-    jobs = max(1, min(args.jobs, len(targets)))
+    # default (0 or less): run every target at once; else cap at the request
+    jobs = len(targets) if args.jobs <= 0 else max(1, min(args.jobs, len(targets)))
     prog = _Progress(targets, baseline=_corpus_count())
     live = sys.stdout.isatty() and not args.no_progress
     return (_run_live(targets, jobs, prog, scope_search) if live

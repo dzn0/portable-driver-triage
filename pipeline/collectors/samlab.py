@@ -201,8 +201,9 @@ class SamLabCollector(Collector):
                 stats["sys"] += len(got)
                 if not got:
                     stats["no_sys"] += 1
-            if got:
-                progress.add_count(len(got))
+            # Live count is driven by collect_sys_files, which reports only
+            # drivers NEW to the content-addressed corpus — counting len(got)
+            # here too would double-count and re-inflate with pre-dedup rows.
             # `ok` even with zero .sys: the pack is deterministic (often INF-only),
             # so record it permanent to avoid re-downloading it every run.
             self._record(name, url, [r["sha256"] for r in got],

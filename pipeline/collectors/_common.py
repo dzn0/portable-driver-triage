@@ -444,3 +444,128 @@ def collect_sys_files(
             # does not inflate it.
             progress.add_count(1)
     return rows
+
+
+# ── embedded-driver carving ───────────────────────────────────────────────────
+def _embedded_driver_len(data: bytes, mz: int) -> int | None:
+    """If an intact native-subsystem (kernel-driver) PE begins at `mz` in `data`,
+    return its exact on-disk length, else None.
+
+    Length is the greatest section end (PointerToRawData + SizeOfRawData),
+    extended by the Authenticode security directory when present, so a *signed*
+    driver is carved whole. Only `IMAGE_SUBSYSTEM_NATIVE` (1) PEs qualify, which
+    is what lets the carve run over a whole application binary without mistaking
+    its user-mode EXE/DLL bytes for a driver."""
+    try:
+        if data[mz:mz + 2] != b"MZ":
+            return None
+        pe = mz + struct.unpack_from("<I", data, mz + 0x3C)[0]
+        if pe + 24 + 68 + 2 > len(data) or data[pe:pe + 4] != b"PE\0\0":
+            return None
+        if struct.unpack_from("<H", data, pe + 24 + 68)[0] != 1:  # subsystem
+            return None
+        num_sec = struct.unpack_from("<H", data, pe + 6)[0]
+        size_opt = struct.unpack_from("<H", data, pe + 20)[0]
+        opt = pe + 24
+        magic = struct.unpack_from("<H", data, opt)[0]
+        end = 0
+        sec = opt + size_opt
+        for k in range(num_sec):
+            base = sec + k * 40
+            if base + 24 > len(data):
+                return None
+            sraw = struct.unpack_from("<I", data, base + 16)[0]
+            praw = struct.unpack_from("<I", data, base + 20)[0]
+            if praw and sraw:
+                end = max(end, praw + sraw)
+        # data-directory entry 4 (security): its VirtualAddress is a FILE offset
+        # relative to this PE's own start, so the signed file ends at off+size.
+        ddir = opt + (112 if magic == 0x20b else 96)
+        if ddir + 4 * 8 + 8 <= len(data):
+            cert_off, cert_sz = struct.unpack_from("<II", data, ddir + 4 * 8)
+            if cert_off and cert_sz:
+                end = max(end, cert_off + cert_sz)
+        return end if end and mz + end <= len(data) else None
+    except struct.error:
+        return None
+
+
+def _carve_native_pes(data: bytes) -> list[tuple[int, int]]:
+    """Return (offset, length) of every intact native-subsystem PE embedded in
+    `data`, skipping past each hit so a driver's own internal `MZ` (its DOS stub,
+    an embedded cert, …) cannot produce a false second hit."""
+    out: list[tuple[int, int]] = []
+    i = 0
+    while True:
+        i = data.find(b"MZ", i)
+        if i < 0:
+            break
+        ln = _embedded_driver_len(data, i)
+        if ln:
+            out.append((i, ln))
+            i += ln
+        else:
+            i += 2
+    return out
+
+
+def collect_carved_drivers(
+    extracted_root: Path,
+    drivers_dir: Path,
+    *,
+    verify: bool = True,
+    max_scan_mb: int = 256,
+) -> list[dict]:
+    """Recover kernel drivers embedded *inside* application binaries.
+
+    Some monitoring/diagnostic utilities (CPU-Z, RW-Everything, HWiNFO, …) carry
+    their `.sys` as a PE resource or an appended blob inside the app `.exe`, which
+    `collect_sys_files` cannot see: the driver is not a standalone file on disk,
+    and 7-Zip neither reconstructs it from the resource nor splits a blob that
+    concatenates several driver PEs. This walks every file under `extracted_root`,
+    byte-scans for intact native-subsystem PEs, slices each out, dedups by
+    sha256, and stores survivors exactly like `collect_sys_files` — same row
+    shape, same live counting — tagging each row `carved`.
+
+    Files larger than `max_scan_mb` are skipped to bound memory (driver-bearing
+    app binaries are tens of MB at most). Carving is opt-in per collector: it is
+    the fallback for PE-resource sources, not run over the bulk driver-pack
+    collectors where every file would be needlessly byte-scanned."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+    cap = max_scan_mb * (1 << 20)
+    files = [p for p in sorted(extracted_root.rglob("*"))
+             if p.is_file() and 0 < p.stat().st_size <= cap]
+    progress.report(f"carving {len(files)} file(s) for embedded drivers")
+    for p in files:
+        try:
+            data = p.read_bytes()
+        except OSError:
+            continue
+        for off, ln in _carve_native_pes(data):
+            blob = data[off:off + ln]
+            digest = hashlib.sha256(blob).hexdigest()
+            if digest in seen:
+                continue
+            seen.add(digest)
+            target = drivers_dir / f"{digest}.sys"
+            is_new = not target.exists()
+            if is_new:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(blob)
+            ident = pe_identity(target)
+            signature = (verify_signature(target) if verify
+                         else {"accepted": None, "reason": "skipped"})
+            rows.append({
+                "sha256": digest,
+                "original_name": f"{p.name}@{off}",
+                "size": len(blob),
+                "pe": ident,
+                "signature": signature,
+                "extraction_path": f"{p.relative_to(extracted_root)}@{off}",
+                "stored_path": str(target),
+                "carved": True,
+            })
+            if is_new:
+                progress.add_count(1)
+    return rows
