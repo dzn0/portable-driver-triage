@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "sha256": "045389ea9b902025ba37bfc6382a3b37bcbc4fce62d15bb9c872622fa8403abc",
+  "imphash": "3a7b5c9d1e2f4a6b8c0d2e4f6a8b0c1d",
+  "arch": "x64",
+  "original_name": "WinRing0x64.sys",
+  "size_bytes": 14440,
+  "signature_status": "signed",
+  "signals": {
+    "dangerous_imports": ["MmMapIoSpace", "WRITE_PORT_UCHAR", "WRITE_PORT_ULONG"],
+    "clone_hits": [
+      { "ref_id": "winring0_x64", "cve": "CVE-2020-14979", "similarity": 1.0 }
+    ],
+    "scope_matches": [
+      { "scope": "arbitrary-physical-memory", "rank": 10 },
+      { "scope": "smm-smi", "rank": 6 }
+    ]
+  },
+  "triage": {
+    "qualifies": true,
+    "best_scope": "arbitrary-physical-memory",
+    "best_rank": 10
+  },
+  "detected_at": "2026-10-02T20:14:13Z",
+  "pipeline_version": "v0.1.0"
+}

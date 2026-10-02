@@ -305,21 +305,24 @@ You are in mass triage mode when you are invoked from the project root (not from
 
 ### Inputs you read
 
-- **`reports/index.jsonl`** — one JSON per line, one line per analysis. Schema: `schemas/index_row.schema.json`.
+- **`reports/fingerprints.jsonl`** — the cheap L1 pass, **one line per driver**, written for *every* collected driver (before any deep analysis). Schema: `schemas/fingerprint_row.schema.json`. This is your primary triage surface: it carries `signals.scope_matches` (every profile the driver qualifies for, with an import-only rank), `signals.dangerous_imports`, and `signals.clone_hits` for the *whole corpus*, not just the drivers that were deep-analyzed.
+- **`reports/index.jsonl`** — the deep pass, **one line per analysis** (driver × scope). Schema: `schemas/index_row.schema.json`. A driver here has a real bundle and, often, `top_findings_preview`. Use it to tell which candidates are already analyzed deep.
 - **`reports/rejected.jsonl`** — read only if the question explicitly asks what was considered and rejected. Usually ignored.
 - **`scope_profiles/*.yaml`** — read only if you need to understand what a `scope_matches` entry on a row means.
 
-You do **not** open any bundle in this mode. The index is complete for triage; opening bundles is the operator's next step, not yours.
+You do **not** open any bundle in this mode. The indexes are complete for triage; opening bundles is the operator's next step, not yours.
+
+**Fingerprints vs index.** `fingerprints.jsonl` covers *everything* cheaply but its ranks are import-only lower bounds (no IOCTL/method terms — see `docs/ranking.md`). `index.jsonl` covers only drivers that were deep-analyzed, with authoritative ranks and findings. Read fingerprints to find *all* candidates for a capability; cross-reference index to see which already have deep bundles.
 
 ### Reading procedure
 
-1. Load `reports/index.jsonl` once.
-2. Deduplicate rows by `(identity.sha256, run.scope_profile)`, keeping the row with the most recent `run.generated_at`.
-3. Translate the researcher's question into a predicate over `signals.scope_independent`. Examples of common translations:
+1. Load `reports/fingerprints.jsonl` (dedup by `sha256`, keep most recent `detected_at`) as the candidate universe. Load `reports/index.jsonl` too (dedup by `(identity.sha256, run.scope_profile)`, most recent `run.generated_at`) to know which drivers already have deep bundles.
+2. Translate the researcher's question into a predicate over the fingerprint `signals` (same field names on both files, except the index nests them under `signals.scope_independent`). Examples of common translations:
    - *"arbitrary physical I/O"* → `dangerous_imports` contains any of {`MmMapIoSpace`, `MmMapLockedPages*`, `ZwMapViewOfSection`, `__writecr*`} **OR** `scope_matches` contains `arbitrary-physical-memory`.
-   - *"HID / mouse / keyboard input"* → `device_classes` intersects {`hid`, `input`} **OR** `interesting_strings` contains any of {`Mouclass`, `Kbdclass`, `HidP`} **OR** `scope_matches` contains `hid-input-control`.
+   - *"HID / mouse / keyboard input"* → `scope_matches` contains `hid-input-control` **OR** (on an index row) `device_classes` intersects {`hid`, `input`} / `interesting_strings` contains any of {`Mouclass`, `Kbdclass`, `HidP`}.
    - *"similar to known CVE X"* → `clone_hits[].cve == "X"`.
-4. Rank the matches. More matched signals, higher `scope_matches.rank` for the queried capability, and any `clone_hits` with a CVE push a candidate up.
+3. Rank the matches. More matched signals, higher `scope_matches.rank` for the queried capability, and any `clone_hits` with a CVE push a candidate up. Remember fingerprint ranks are import-only lower bounds; an index (deep) rank for the same driver+scope supersedes it.
+4. Set `status` per candidate: `already_analyzed_deep` if the driver has an index row for the queried scope with `top_findings_preview`; otherwise `needs_deep_rerun` (it exists only as a fingerprint, or was deep-analyzed under a different scope). For the latter, the operator's next step is `pipeline.analyze <sha> --scope <queried> --from-fingerprints`.
 5. Produce the triage report. Do **not** open bundles for deep analysis in this mode.
 
 ### Deliverable
@@ -364,7 +367,7 @@ Write to `reports/triage/<generated_at_compact>_<query_slug>/triage.json` plus a
 ### `status` values
 
 - **`already_analyzed_deep`** — the matched row has `top_findings_preview` populated. A Mode A invocation on `bundle_path` can go straight to the AI's prior deep findings.
-- **`needs_deep_rerun`** — the matched row was analyzed under a different scope than the capability asked about. Operator should re-run the pipeline on that driver with the matching scope before deep analysis is meaningful.
+- **`needs_deep_rerun`** — the candidate has no deep bundle for the queried scope: it exists only as an L1 fingerprint, or was deep-analyzed under a different scope. Operator should run `pipeline.analyze <sha> --scope <queried> --from-fingerprints` before deep analysis is meaningful.
 
 ### `triage.md` shape
 
@@ -376,4 +379,4 @@ A ranked list, one `###` section per candidate, in the same order as the JSON. E
 - `one_liner` must cite values that actually appear in `matched_signals`. No paraphrases that introduce facts the row does not carry.
 - A candidate with empty `matched_signals` is not a candidate — drop it, do not emit it.
 - If the predicate finds nothing but the researcher's wording hints at a near-miss (e.g. asked about MSR, found only CR-register-write candidates), put those under `no_matches_but_closely_related` with a short note. Never let them pollute `candidates`.
-- When the index is empty or absent, emit a `triage.json` with `rows_scanned: 0`, empty `candidates`, and an `unknowns` entry naming the missing file. Do not improvise.
+- When both `fingerprints.jsonl` and `index.jsonl` are empty or absent, emit a `triage.json` with `rows_scanned: 0`, empty `candidates`, and an `unknowns` entry naming the missing file(s). Do not improvise. (If only `index.jsonl` is missing but `fingerprints.jsonl` exists, triage from fingerprints and mark every candidate `needs_deep_rerun`.)

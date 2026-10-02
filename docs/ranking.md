@@ -1,9 +1,12 @@
 # Scope-profile ranking formula
 
-Every scope profile under `scope_profiles/` is applied to a driver's L1 signals to produce a single integer **rank**. The rank appears in two places inside `reports/index.jsonl`:
+Every scope profile under `scope_profiles/` is applied to a driver's signals to produce a single integer **rank**. The rank appears in three places:
 
-- `signals.scope_independent.scope_matches[].rank` — one entry per profile whose `must_have_one` gate fires for this driver, computed regardless of which scope the run was for.
-- `signals.scope_dependent.rank` — the rank of the profile the run was actually conducted under. Equal to the matching `scope_matches[].rank` entry.
+- `reports/fingerprints.jsonl` → `signals.scope_matches[].rank` — the cheap **L1** rank, computed from the PE import table alone (no disassembly), on every driver. See [L1 vs deep rank](#l1-vs-deep-rank) below.
+- `reports/index.jsonl` → `signals.scope_independent.scope_matches[].rank` — one entry per profile whose `must_have_one` gate fires for this driver, computed regardless of which scope the run was for.
+- `reports/index.jsonl` → `signals.scope_dependent.rank` — the rank of the profile the run was actually conducted under. Equal to the matching `scope_matches[].rank` entry.
+
+The same additive formula (`compute_rank` in [`pipeline/adapter/scoring.py`](../pipeline/adapter/scoring.py)) backs all three; only the richness of the input signals differs by stage.
 
 ## The formula
 
@@ -31,6 +34,15 @@ Where:
 - **Transparency.** `rank = 23` can be decomposed into exact contributions ("18 from a clone hit, 5 from an IOCTL match"). Any triage AI consuming the index can show its work.
 - **No calibration drift.** Normalized or percentile scores look prettier but need re-calibration every time a profile's `weight_each` list grows. Additive raw counts just grow with the signal density; no recalibration required.
 - **Cross-profile comparability is deliberately NOT a goal.** The weight constants are per-profile. A rank of 20 in `arbitrary-physical-memory` is **not** comparable to a rank of 20 in `hid-input-control`. The Mode-C triage reader must dedup by `(sha256, scope)` and compare only within the same scope.
+
+## L1 vs deep rank
+
+The rank is computed at two stages from the *same* formula but *different* inputs:
+
+- **L1 (fingerprint, cheap, every driver).** Inputs come from the PE import table only: `must_have_one`, `dangerous_imports` (weight_each), and `clone_hit`. The `ioctl_match`, `method_match` and `device_match` terms require the IOCTL dispatch table and device-name recovery, which only the deep engine produces — so at L1 they are `0`. **The L1 rank is therefore a lower bound.** It is enough to decide *qualification* (whether `must_have_one` fired), which is import-driven, and that is what `pipeline.analyze --from-fingerprints` selects on.
+- **Deep (bundle, expensive, shortlist only).** Inputs come from the full DrvEye report, so every term contributes. This is the authoritative rank written to `index.jsonl`.
+
+A driver's deep rank is always ≥ its L1 rank for the same profile. This is by design: L1 must never *over*-promise and skip a driver the deep stage would have ranked higher — the missing terms can only add.
 
 ## What `rank` is NOT
 

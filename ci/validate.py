@@ -30,11 +30,12 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 
 SCHEMAS = {
-    "index_row":     ROOT / "schemas" / "index_row.schema.json",
-    "rejected_row":  ROOT / "schemas" / "rejected_row.schema.json",
-    "findings":      ROOT / "schemas" / "findings.schema.json",
-    "scope_profile": ROOT / "schemas" / "scope_profile.schema.json",
-    "triage":        ROOT / "schemas" / "triage.schema.json",
+    "index_row":       ROOT / "schemas" / "index_row.schema.json",
+    "rejected_row":    ROOT / "schemas" / "rejected_row.schema.json",
+    "fingerprint_row": ROOT / "schemas" / "fingerprint_row.schema.json",
+    "findings":        ROOT / "schemas" / "findings.schema.json",
+    "scope_profile":   ROOT / "schemas" / "scope_profile.schema.json",
+    "triage":          ROOT / "schemas" / "triage.schema.json",
 }
 
 REFS_EXPECTED = {
@@ -44,11 +45,12 @@ REFS_EXPECTED = {
 }
 
 EXAMPLE_MAP = {
-    "index_row.example.json":     "index_row",
-    "rejected_row.example.json":  "rejected_row",
-    "findings.example.json":      "findings",
-    "scope_profile.example.yaml": "scope_profile",
-    "triage.example.json":        "triage",
+    "index_row.example.json":       "index_row",
+    "rejected_row.example.json":    "rejected_row",
+    "fingerprint_row.example.json": "fingerprint_row",
+    "findings.example.json":        "findings",
+    "scope_profile.example.yaml":   "scope_profile",
+    "triage.example.json":          "triage",
 }
 
 

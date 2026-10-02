@@ -19,17 +19,24 @@ This project closes that gap. It locates candidate drivers via public indexes, d
 - **Metadata over binaries** — the repo stores analysis output and references, not a re-hosted archive of potentially malicious drivers. Binaries are fetched on demand from legitimate sources.
 - **Discovery is separate from distribution** — indexes are used to *find* installers; the actual download always goes to the vendor's original URL.
 - **Defensive by construction** — cross-references known-vulnerable driver datasets and reports attack-surface indicators, so the output serves triage and detection engineering.
-- **Reuse the engine, own the layers above and below** — the static analysis engine (PE parsing, Authenticode, IOCTL discovery, taint, exploit-primitive classification) is **not** reinvented here. The project vendors [DrvEye](https://github.com/0xDbgMan/DrvEye) (MIT) as its L0→L3+ engine and focuses its own effort on the two layers DrvEye explicitly does not provide: **(a)** real-world vendor-driver collection and static extraction from installers, and **(b)** the AI-handoff contract (per-bundle `AGENTS.md`, scope profiles, `index.jsonl` for mass triage, `findings.json` with citation rules). This is the pivot that keeps the project tractable; see [Design pivot — engine reuse](#design-pivot--engine-reuse) below.
+- **Cheap triage before expensive analysis** — the signals that decide *whether a driver is worth the deep engine* (dangerous imports, imphash clone family, and therefore which scope profiles it qualifies for) all come from the PE import table, which is nearly free to read. So the pipeline computes them first, on everything (**L0 gate + L1 fingerprint**, fused into collection → `reports/fingerprints.jsonl`), and only runs the expensive engine on the shortlist. This resolves the chicken-and-egg of "you need details to filter, but extracting details is the expensive thing": the *filtering* details are cheap; only the *confirming* details (IOCTL dispatch, taint) are expensive. See [docs/ranking.md](ranking.md#l1-vs-deep-rank).
+- **Reuse the engine, own the layers above and below** — the heavy static-analysis engine (disassembly, IOCTL discovery, taint, exploit-primitive classification) is **not** reinvented here. The project vendors [DrvEye](https://github.com/0xDbgMan/DrvEye) (MIT) as its deep L2→L3+ engine and focuses its own effort on the layers DrvEye does not provide: **(a)** real-world vendor-driver collection and static extraction from installers, **(b)** the cheap L0/L1 pre-triage above, and **(c)** the AI-handoff contract (per-bundle `AGENTS.md`, scope profiles, `fingerprints.jsonl` + `index.jsonl` for mass triage, `findings.json` with citation rules). This is the pivot that keeps the project tractable; see [Design pivot — engine reuse](#design-pivot--engine-reuse) below.
 
 ## Workflow
 
 ```
-  ┌──────────┐   ┌───────────┐   ┌──────────────┐   ┌──────────┐   ┌────────┐
-  │ Download │ → │  Extract  │ → │ Static        │ → │ Analyze  │ → │ Report │
-  │ (vendor) │   │ (unpack   │   │ pre-analysis  │   │ (AI +    │   │ (per-  │
-  │          │   │ installer)│   │ (L0 → L3+)    │   │ human)   │   │ binary)│
-  └──────────┘   └───────────┘   └──────────────┘   └──────────┘   └────────┘
+  ┌──────────┐   ┌───────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────┐   ┌────────┐
+  │ Download │ → │  Extract  │ → │ Fingerprint  │ → │ Select       │ → │ Analyze  │ → │ Report │
+  │ (vendor) │   │ (unpack   │   │ (L0 + L1,    │   │ (shortlist   │   │ deep     │   │ (per-  │
+  │          │   │ installer)│   │ cheap, ALL)  │   │ by scope)    │   │ (L2→L3+) │   │ binary)│
+  └──────────┘   └───────────┘   └──────────────┘   └──────────────┘   └──────────┘   └────────┘
+       └──────── fused: fingerprint runs AS each driver lands ────────┘        └─ only the shortlist ─┘
 ```
+
+The cheap stages (L0 viability + L1 fingerprint) run on **every** driver, fused into
+collection so the whole corpus is triaged by the time the download finishes. The
+expensive deep engine (L2→L3+, DrvEye) runs only on the drivers the fingerprint
+flagged for the scope being hunted. See [Analysis pipeline](#analysis-pipeline-gated-four-levels).
 
 ## Collection
 
@@ -52,7 +59,7 @@ earlier per-vendor research is preserved in [`SOURCES.md`](SOURCES.md) as histor
 
 ### Search scope vs. analysis scope
 
-A **scope** is one vocabulary applied at two points:
+A **scope** is one vocabulary applied at three points:
 
 - **Search scope** (`pipeline.collect --scope <name>`) narrows what the collector
   looks for. A scope profile carries a `search:` block (catalog `queries` +
@@ -60,8 +67,14 @@ A **scope** is one vocabulary applied at two points:
   directly as a catalog query (`--scope network`). With no scope, collection is a
   broad sweep across device classes. Resolution lives in
   [`pipeline/search_scope.py`](../pipeline/search_scope.py).
-- **Analysis scope** (`pipeline.analyze --scope <name>`) filters which collected
-  drivers go deep and enriches the AI handoff. (Unchanged.)
+- **Triage scope / L1** (`pipeline.fingerprint`) — the cheap fingerprint scores
+  *every* driver against *every* profile at once (import-only), writing
+  `scope_matches` to `reports/fingerprints.jsonl`. `pipeline.fingerprint --select
+  <name>` lists the drivers that qualify for a scope — the shortlist for the deep
+  stage. Scored during collection, so no separate wait.
+- **Analysis scope / deep** (`pipeline.analyze --scope <name>`) runs the expensive
+  engine on the drivers that scope selected (pair with `--from-fingerprints`) and
+  enriches the AI handoff.
 
 **In scope**
 - Drivers that shipped in **real products** — WHQL / catalog-signed updates.
@@ -110,7 +123,7 @@ Neither is on the V1 critical path; both become relevant once the AI starts prod
 
 ## Analysis pipeline (gated, four levels)
 
-The pipeline is layered — DrvEye performs the heavy lifting internally, but this project maps its output into the same four-level vocabulary so the bundle layout and the AI contract stay stable regardless of which engine the adapter is pointed at. This also keeps the door open for a future second engine (IOCTLance / POPKORN) to populate the same buckets.
+The pipeline is layered. The cheap levels — **L0** (viability gate) and **L1** (fingerprint) — are first-party pefile-only passes that run on every driver during collection. The expensive levels — **L2** (disassembly + dispatch) and **L3+** (taint, primitives, bug classes) — are delivered by DrvEye and run only on the fingerprint shortlist; this project maps DrvEye's output into the same vocabulary so the bundle layout and the AI contract stay stable regardless of which engine the adapter is pointed at. This also keeps the door open for a future second engine (IOCTLance / POPKORN) to populate the same buckets.
 
 ### L0 — Viability gate (cheap, runs on everything)
 
@@ -124,21 +137,35 @@ Discards binaries that could not realistically load as drivers, so later levels 
 
 Rejections land in `rejected.jsonl` with the reason — never silently dropped.
 
-### L1 — Identity (runs on every L0 survivor)
+### L1 — Fingerprint (cheap, first-party, runs on every driver)
 
-| Facet | Content |
-|---|---|
-| Integrity | SHA256, imphash, TLSH |
-| Known-bad cross-ref | Lookup against curated vulnerable-driver datasets by hash |
-| Code signing | Signer chain, revocation / expiry, WHQL attestation |
-| PE metadata | Architecture, timestamps, sections, per-section entropy, imports/exports, resources, version info |
-| Attack-surface indicators | Device names, dangerous imports (`MmMapIoSpace`, physical memory / MSR access, `ZwMapViewOfSection` patterns), interesting strings |
-| Heuristics | YARA matches, scoring for arbitrary-memory-access primitives |
-| Provenance | Installer source URL, installer SHA256 at download time, extraction path |
+Unlike L2→L3+, L1 is **not** DrvEye — it is a first-party pefile-only pass
+([`pipeline/adapter/l1.py`](../pipeline/adapter/l1.py)) that runs *inside collection*
+as each driver lands, so the whole corpus is triaged by capability before any deep
+analysis. One PE parse yields everything it needs:
 
-### Scope gate — only drivers of interest proceed
+| Facet | Content | Cost |
+|---|---|---|
+| Integrity | SHA256 (from content-addressing), imphash | free |
+| Dangerous imports | Imported symbols present in `refs/dangerous_imports.yaml` | import table |
+| Clone cross-ref | sha256-exact + imphash-family match vs the local LOLDrivers snapshot | import table |
+| Cross-profile scope_matches | *Every* profile whose `must_have_one` gate fires, with its import-only rank (`compute_rank` in `scoring.py`) | import table |
+| Triage verdict | `qualifies` = matched any scope OR any clone hit; `best_scope` / `best_rank` | derived |
 
-The researcher declares a **scope profile** (see below). L1 output is filtered and ranked against that profile; only the top candidates proceed to L2.
+Each driver gets one row in `reports/fingerprints.jsonl`
+(`schemas/fingerprint_row.schema.json`). Deferred to the deep stage (they need
+disassembly, not the import table): IOCTL/method rank terms, TLSH, YARA,
+per-section entropy, signer-chain verification. The L1 rank is therefore a **lower
+bound** — see [docs/ranking.md](ranking.md#l1-vs-deep-rank).
+
+### Scope gate — only the fingerprint shortlist proceeds
+
+The researcher declares a **scope profile** (see below). `pipeline.analyze
+--from-fingerprints --scope <name>` reads `fingerprints.jsonl` and runs the deep
+engine only on drivers whose L1 `scope_matches` qualify for that scope (at or above
+`--min-rank`). `--deep-all` overrides to analyze everything (the pre-L1 behavior).
+This is the gate that keeps the expensive engine off the thousands of drivers that
+carry no relevant capability.
 
 ### L2 — Disassembly & dispatch map
 
@@ -193,9 +220,10 @@ The same driver can be analyzed multiple times — different scope profiles, dif
 
 ```
 reports/
-├── index.jsonl                              # mass-triage index, append-only
+├── fingerprints.jsonl                       # L1 cheap pass — one line per driver, append-only
+├── index.jsonl                              # deep-analysis index — one line per (driver, scope), append-only
 ├── rejected.jsonl                           # L0 rejections, separate stream
-└── <sha256>/                                # one directory per unique driver
+└── <sha256>/                                # one directory per unique driver (deep stage only)
     ├── identity.json                        # L1 — shared across analyses
     ├── pe_metadata.json                     # L1 — shared
     ├── disasm_full.txt                      # L2 raw — shared (grep-friendly)
@@ -229,9 +257,14 @@ Binaries that fail the L0 viability gate never get a `<sha256>/` directory. They
 
 ## Mass triage index
 
-The primary way researchers interact with this project is **mass triage**: point an AI at the whole corpus and ask "which drivers match this capability?". For that to scale, the AI must never walk the bundle tree directory by directory — it reads a single index file, filters, ranks, and only then opens the handful of bundles worth looking at.
+The primary way researchers interact with this project is **mass triage**: point an AI at the whole corpus and ask "which drivers match this capability?". For that to scale, the AI must never walk the bundle tree directory by directory — it reads flat index files, filters, ranks, and only then opens the handful of bundles worth looking at.
 
-`reports/index.jsonl` is that file. One JSON document per line, one line per analysis (not per driver — a driver re-analyzed under a new scope appends a new line), append-only, never mutated.
+There are **two** such files, by stage:
+
+- **`reports/fingerprints.jsonl`** — the L1 cheap pass, **one line per driver**, written for every collected driver. This is the complete candidate universe for a capability question, including drivers that were never deep-analyzed. Import-only ranks (lower bounds). Schema: `schemas/fingerprint_row.schema.json`.
+- **`reports/index.jsonl`** — the deep pass, **one line per analysis** (not per driver — a driver re-analyzed under a new scope appends a new line), append-only, never mutated. Authoritative ranks + `top_findings_preview` for drivers that were actually deep-analyzed. Schema: `schemas/index_row.schema.json`.
+
+A triage reader uses fingerprints to find *all* candidates and the index to see which of them already have deep bundles (see [Mode C](#mode-c--mass-triage-from-the-project-root-dominant-use-case)).
 
 ### Row shape
 
@@ -246,11 +279,11 @@ Every row has four blocks:
 
 Plus `schema_version` at the top level, so multiple schema generations can coexist in the same stream during a migration.
 
-### Why scope-independent signals in L1 matter
+### Why scope-independent signals matter
 
-The L1 baseline is always computed, regardless of which scope was active for a given run. This is what lets the AI answer "which drivers allow arbitrary I/O?" even when most bundles were originally run under a different scope — the `dangerous_imports` field is still there to filter on.
+The L1 baseline is computed on **every** driver (in `fingerprints.jsonl`), and mirrored into each deep row's `signals.scope_independent` (in `index.jsonl`), regardless of which scope was active. This is what lets the AI answer "which drivers allow arbitrary I/O?" even when most drivers were collected or analyzed under a different scope — the `dangerous_imports` and cross-profile `scope_matches` fields are always there to filter on.
 
-The scope only governs how deep L2 and L3 go (which handlers get decompiled). A triage question that goes beyond what any run's scope touched can still identify candidates from the baseline, and the researcher can then re-run those specific drivers under the matching scope for the deep layers.
+Crucially, the cross-profile `scope_matches` is computed at L1 from imports alone — so a driver collected while hunting HID still advertises that it qualifies for `arbitrary-physical-memory`, *before* any deep analysis spends a second on it. The scope only governs how deep L2 and L3 go (which handlers get decompiled). A triage question that goes beyond what any run touched can still identify candidates from the fingerprint, and the researcher can then deep-analyze exactly those with `pipeline.analyze --from-fingerprints --scope <matching>`.
 
 ### Re-analysis semantics
 
@@ -293,13 +326,13 @@ The researcher opens the AI at the project root and asks a capability-level ques
 
 The AI loads the root `AGENTS.md`, follows its mass-triage instructions:
 
-1. Reads `reports/index.jsonl` — a single file, one line per analysis.
-2. Filters rows by `signals.scope_independent` (dangerous imports, device classes, clone hits) against the capability the researcher asked about.
-3. Deduplicates by `(sha256, scope)`, keeping the most recent run per pair.
-4. Produces a ranked triage report with per-driver one-liners and links to the matching bundles.
-5. Only then opens the top handful of candidates' `ai_bundle.md` and L3 artifacts to produce detailed findings on those.
+1. Reads `reports/fingerprints.jsonl` (the complete candidate universe, one line per driver) and `reports/index.jsonl` (which drivers already have deep bundles).
+2. Filters by the fingerprint `signals` (dangerous imports, `scope_matches`, clone hits) against the capability the researcher asked about.
+3. Deduplicates — fingerprints by `sha256`, index by `(sha256, scope)` — keeping the most recent per key.
+4. Produces a ranked triage report with per-driver one-liners, marking each candidate `already_analyzed_deep` (has an index bundle for the scope) or `needs_deep_rerun` (fingerprint-only, or analyzed under another scope).
+5. Only then opens the top handful of already-analyzed candidates' `ai_bundle.md` and L3 artifacts to produce detailed findings on those; for `needs_deep_rerun` candidates it recommends `pipeline.analyze --from-fingerprints`.
 
-This path never walks the bundle tree directory by directory — it reads one file (`index.jsonl`), then jumps straight to the few bundles that matter via the `evidence_pointers` in each matching row.
+This path never walks the bundle tree directory by directory — it reads two flat files, then jumps straight to the few bundles that matter via the `evidence_pointers` in each matching index row.
 
 ### Tool-agnostic by design
 
@@ -315,17 +348,24 @@ engine are all bundled. No host-side "install these 14 libraries first".
 # build once
 docker compose build
 
-# 1. collect — networked: pull the LOLDrivers reference set + a vendor driver
+# 1. collect — networked: pull the LOLDrivers reference set + a vendor driver.
+#     Each driver is L1-fingerprinted as it lands → reports/fingerprints.jsonl.
 docker compose run --rm collect pipeline.collect loldrivers windivert
 
-# 2. analyze — offline (network cut): one driver under a scope
+# 2. fingerprint — offline: the cheap L1 pass. Usually already done by collect;
+#     --all backfills a corpus gathered earlier. --select lists the shortlist.
+docker compose run --rm analyze pipeline.fingerprint --all
+docker compose run --rm analyze pipeline.fingerprint --select arbitrary-physical-memory
+
+# 3. analyze — offline (network cut): the EXPENSIVE deep stage, only on the
+#     fingerprint shortlist for the scope. --deep-all overrides to the whole
+#     corpus; --jobs N parallelizes across worker processes (appends to
+#     index.jsonl / rejected.jsonl are concurrency-safe via O_APPEND).
+docker compose run --rm analyze pipeline.analyze --all --scope arbitrary-physical-memory --from-fingerprints --skip-existing --jobs 8
+#     ...or one driver by hash:
 docker compose run --rm analyze pipeline.analyze <sha256> --scope arbitrary-physical-memory
 
-# 2b. analyze the WHOLE collected corpus under a scope (L0 gate + bundle each;
-#     one driver's crash/timeout never aborts the batch)
-docker compose run --rm analyze pipeline.analyze --all --scope arbitrary-physical-memory --skip-existing
-
-# 3. decompile — offline: materialize pseudo-C for a cited function, on demand
+# 4. decompile — offline: materialize pseudo-C for a cited function, on demand
 docker compose run --rm analyze pipeline.decompile <sha256> 0x401478
 ```
 
@@ -354,13 +394,23 @@ The pipeline does not pin installer hashes — it always fetches the current ver
 
 Early implementation stage. The methodology above is settled; after the pivot to [vendoring DrvEye](#design-pivot--engine-reuse) as the L0→L3+ engine, the remaining work is scoped to **two first-party layers**: the collectors (porting the 34-source prototypes under `E:\temp\*` into `pipeline/collectors/`) and the DrvEye-to-bundle adapter (which emits the AI contract on top of DrvEye's JSON). The static-analysis engine itself is no longer on the critical path. See **Pending** for the ordered item list.
 
-The zero-config container (see [Running the pipeline](#running-the-pipeline-docker-zero-config)), the L0 viability gate + `rejected.jsonl` stream, and the adapter's bundle output — disasm + `functions.json`, on-demand decompilation, the L3 hint files, and conforming `index.jsonl` rows — are in place. Batch analysis is wired too — `python -m pipeline.analyze --all --scope <name> [--skip-existing]` gates + analyzes every collected driver with per-driver isolation. 14 collectors are ported (see Pending §1); a `collect --all` populates a real corpus (hundreds of drivers), and `analyze --all` builds their bundles. The remaining first-party gaps are the two hard-tier collectors (`corsair`, `lenovo`) and TLSH/`detections/` ingestion.
+The zero-config container (see [Running the pipeline](#running-the-pipeline-docker-zero-config)), the L0 viability gate + `rejected.jsonl` stream, the L1 fingerprint stage (`pipeline/adapter/l1.py` + `pipeline/fingerprint.py`, fused into collection → `reports/fingerprints.jsonl`, with `pipeline.analyze --from-fingerprints` gating the deep stage on it), and the adapter's bundle output — disasm + `functions.json`, on-demand decompilation, the L3 hint files, and conforming `index.jsonl` rows — are in place. Batch analysis is wired too — `python -m pipeline.analyze --all --scope <name> [--skip-existing] [--jobs N]` gates + analyzes every collected driver with per-driver isolation, optionally fanning the work across `N` worker processes inside the same container. 14 collectors are ported (see Pending §1); a `collect --all` populates a real corpus (hundreds of drivers), and `analyze --all` builds their bundles. The remaining first-party gaps are the two hard-tier collectors (`corsair`, `lenovo`) and TLSH/`detections/` ingestion.
 
 ---
 
 ## Pending
 
 The items below block implementation. They are listed in the order they need to be resolved.
+
+### 0. L1 fingerprint stage — cheap triage before the deep engine
+
+**Done.** The signals that decide whether a driver is worth DrvEye (dangerous imports, imphash clone family, cross-profile `scope_matches`) are import-table-only, so they are computed first on every driver and the expensive engine runs only on the shortlist.
+
+- **Done** — [`pipeline/adapter/scoring.py`](../pipeline/adapter/scoring.py): the additive rank formula + cross-profile `compute_scope_matches`, factored out of the bundle writer so the collector can reuse them without the Jinja2 dependency.
+- **Done** — [`pipeline/adapter/l1.py`](../pipeline/adapter/l1.py): one pefile parse → imports/imphash → dangerous imports, offline clone hits (reusing `l3.build_clones`), cross-profile `scope_matches`, and a triage verdict; one row per driver to `reports/fingerprints.jsonl`. Schema at [`schemas/fingerprint_row.schema.json`](../schemas/fingerprint_row.schema.json) + example, wired into `ci/validate.py`.
+- **Done** — Fused into collection: [`collect_sys_files`](../pipeline/collectors/_common.py) fingerprints each new driver as it is stored (best-effort; `PDT_NO_FINGERPRINT=1` opts out, a missing dep never breaks collection).
+- **Done** — [`pipeline/fingerprint.py`](../pipeline/fingerprint.py) CLI: `--all` (backfill the corpus) and `--select <scope>` (emit the deep-stage shortlist). `pipeline.analyze --from-fingerprints [--min-rank N]` gates the deep stage on it; `--deep-all` restores the whole-corpus behavior.
+- **Open** — Promote the one-off [`scripts/backfill_scope_matches.py`](../scripts/backfill_scope_matches.py) learnings into a periodic re-fingerprint when `refs/*.yaml` versions bump (ranks stay comparable).
 
 ### 1. Collection and reference sources — research and validation
 
@@ -396,7 +446,7 @@ The mass-triage index described above is the backbone of Mode C and is not yet f
 
 - **Done** — Row schema for `index.jsonl` formalized as [`schemas/index_row.schema.json`](schemas/index_row.schema.json), with a validating example in [`schemas/examples/index_row.example.json`](schemas/examples/index_row.example.json).
 - **Done** — Row schema for `rejected.jsonl` formalized as [`schemas/rejected_row.schema.json`](schemas/rejected_row.schema.json), with an example in [`schemas/examples/rejected_row.example.json`](schemas/examples/rejected_row.example.json).
-- **Mostly done** — Atomic append for both files via temp-file + `os.replace` (`bundle.append_index`, `l0.append_rejected`): crash-safe, no partial lines. Caveat: concurrent writers are last-writer-wins (the whole file is read, appended, and renamed), not yet serialized with a lock — fine for sequential runs, needs a lock for parallel analysis.
+- **Done** — Concurrent-safe append for both files via a direct `O_APPEND` write (`bundle.append_index`, `l0.append_rejected`): crash-safe, no partial lines, and POSIX-atomic across processes for writes under `PIPE_BUF` (every row we emit sits well under the 4 KiB limit; an assertion turns a future oversized row into a loud failure instead of a silent interleave). This closes the earlier read-rewrite-rename race without needing a lock, unblocking `--jobs N` in `pipeline.analyze` and any shard-parallel operator orchestration.
 - **Done** — Baseline reference files consumed during L1: [`refs/dangerous_imports.yaml`](refs/dangerous_imports.yaml) (13 categories, ~160 symbols), [`refs/interesting_strings.yaml`](refs/interesting_strings.yaml) (11 categories including a `known_vulnerable_driver_signatures` set), [`refs/device_classes.yaml`](refs/device_classes.yaml) (election rules for the 11-class vocabulary that `index_row.schema.json` requires).
 - **Done** — Pipeline code produces conforming rows: `index_row` from `pipeline/adapter/bundle.py` (validated 7/7 against `index_row.schema.json`) and `rejected_row` from the L0 gate `pipeline/adapter/l0.py` (validated against `rejected_row.schema.json`).
 - **Done** — L0 viability gate (`pipeline/adapter/l0.py`), wired into `analyze.py` ahead of DrvEye. Cheap pefile-only checks (valid PE, `IMAGE_SUBSYSTEM_NATIVE`, sections within file, imports resolve against a kernel module, conservative packing-entropy heuristic, optional `refs/hash_blacklist.txt`), emitting the closed-vocabulary reasons (`not-pe`, `wrong-subsystem`, `kernel-imports-unresolved`, `corrupted`, `packed-unknown`, `signature-policy-mismatch`, `blacklisted`). A rejected binary is logged to `reports/rejected.jsonl` and never gets a bundle. Signature policy is `any` (default) or `present`; `valid-ever`/`valid-now` are deferred to DrvEye's downstream Authenticode.

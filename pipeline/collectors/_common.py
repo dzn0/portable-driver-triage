@@ -443,7 +443,38 @@ def collect_sys_files(
             # total tracks corpus growth and a re-download of an existing driver
             # does not inflate it.
             progress.add_count(1)
+            # L1 fingerprint, piggybacked on collection: cheap pefile-only scope
+            # triage written to reports/fingerprints.jsonl as each driver lands,
+            # so the "what to attack" map is ready the moment the download ends.
+            # Fully best-effort — never let it break a collection run.
+            _fingerprint_stored_driver(target, digest, p.name,
+                                       rows[-1]["size"], signature)
     return rows
+
+
+# Opt out with PDT_NO_FINGERPRINT=1 (e.g. to run collection without the pefile
+# dependency or the scope_profiles/ tree present).
+_L1_FINGERPRINT = os.environ.get("PDT_NO_FINGERPRINT", "").lower() not in ("1", "true", "yes")
+
+
+def _fingerprint_stored_driver(target: Path, digest: str, original_name: str,
+                               size_bytes: int, signature: dict | None) -> None:
+    """Best-effort L1 fingerprint hook. Imported lazily and wrapped so a missing
+    dependency (pefile / PyYAML), a bad binary, or any adapter error degrades to
+    "no fingerprint for this one" instead of failing the collector."""
+    if not _L1_FINGERPRINT:
+        return
+    try:
+        from ..adapter import l1
+        l1.fingerprint_driver(
+            target, digest,
+            original_name=original_name,
+            size_bytes=size_bytes,
+            signature_status=l1._signature_status_from_collector(signature),
+        )
+    except Exception as exc:  # noqa: BLE001 — collection must survive anything here
+        progress.report(f"fingerprint skipped for {original_name}: "
+                        f"{type(exc).__name__}")
 
 
 # ── embedded-driver carving ───────────────────────────────────────────────────

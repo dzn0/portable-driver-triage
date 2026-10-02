@@ -109,6 +109,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="path to a file of sha256-per-line; restricts --all "
                          "to that subset (used by shard-parallel runners). "
                          "Ignored unless --all is set.")
+    ap.add_argument("--from-fingerprints", action="store_true",
+                    help="with --all: analyze only drivers the cheap L1 pass "
+                         "(reports/fingerprints.jsonl) flagged as qualifying for "
+                         "--scope. This is the intended deep stage — run the "
+                         "expensive engine only on the shortlist. Use --deep-all "
+                         "to override and analyze everything.")
+    ap.add_argument("--min-rank", type=int, default=1,
+                    help="with --from-fingerprints: minimum L1 scope rank to "
+                         "include (default 1 = any qualifying driver).")
+    ap.add_argument("--deep-all", action="store_true",
+                    help="explicitly analyze every driver, ignoring the L1 "
+                         "shortlist (the pre-L1 behavior). Mutually exclusive "
+                         "with --from-fingerprints.")
     ap.add_argument("--jobs", "-j", type=int, default=1, metavar="N",
                     help="run N drivers in parallel inside this container "
                          "(default: 1 = sequential). Writes to index.jsonl / "
@@ -119,6 +132,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.all == bool(args.spec):
         ap.error("provide either a driver spec or --all (not both, not neither)")
+
+    if args.from_fingerprints and args.deep_all:
+        ap.error("--from-fingerprints and --deep-all are mutually exclusive")
 
     # Build the work list of (sha, path).
     if args.all:
@@ -138,6 +154,19 @@ def main(argv: list[str] | None = None) -> int:
             work = [(s, p) for (s, p) in work if s in wanted]
             print(f"[analyze] shard filter: {before} -> {len(work)} drivers "
                   f"(sha-list={args.sha_list})")
+        if args.from_fingerprints:
+            from .fingerprint import qualifying_shas
+            from .adapter import l1 as _l1
+            if not _l1.FINGERPRINTS.is_file():
+                print(f"error: --from-fingerprints but no fingerprints at "
+                      f"{_l1.FINGERPRINTS}; run `python -m pipeline.fingerprint "
+                      f"--all` (or collect) first", file=sys.stderr)
+                return 2
+            shortlist = qualifying_shas(args.scope, args.min_rank)
+            before = len(work)
+            work = [(s, p) for (s, p) in work if s in shortlist]
+            print(f"[analyze] L1 shortlist for '{args.scope}' (min-rank="
+                  f"{args.min_rank}): {before} -> {len(work)} drivers")
     else:
         try:
             work = [_resolve_sys(args.spec)]

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:portable-driver-triage:schema:fingerprint_row:v1",
+  "title": "Portable Driver Triage — fingerprints.jsonl row",
+  "description": "One JSON document per line in reports/fingerprints.jsonl. The cheap, pefile-only L1 pass computed on every collected driver (normally inside collection), BEFORE any expensive DrvEye deep analysis. Carries the import-derived signals that decide whether a driver is worth the deep stage: dangerous imports, imphash clone hits, and the cross-profile scope_matches. Append-only; readers dedup by sha256 keeping the most recent detected_at. A driver qualifying here is what pipeline.analyze --from-fingerprints selects for deep analysis.",
+  "type": "object",
+  "required": ["schema_version", "sha256", "imphash", "arch", "signals", "triage", "detected_at", "pipeline_version"],
+  "additionalProperties": false,
+  "properties": {
+
+    "schema_version": { "const": 1 },
+
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+
+    "imphash": {
+      "type": ["string", "null"],
+      "description": "PE import hash (lower-case hex), or null when the import table is absent/unreadable. Drives imphash-family clone matching."
+    },
+
+    "arch": {
+      "oneOf": [ { "enum": ["x86", "x64", "arm64"] }, { "type": "null" } ]
+    },
+
+    "original_name": {
+      "type": ["string", "null"],
+      "description": "Filename as seen when the driver was collected. Null when unknown (e.g. a corpus backfill keyed only by sha256)."
+    },
+
+    "size_bytes": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+
+    "signature_status": {
+      "enum": ["signed", "unsigned", "unknown"],
+      "description": "Best-effort Authenticode status from collection. 'unknown' when no signing tool was available (e.g. the Linux container)."
+    },
+
+    "signals": {
+      "type": "object",
+      "required": ["dangerous_imports", "clone_hits", "scope_matches"],
+      "additionalProperties": false,
+      "properties": {
+        "dangerous_imports": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Imported symbols present in refs/dangerous_imports.yaml. Import-table only — no disassembly."
+        },
+        "clone_hits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["ref_id", "cve", "similarity"],
+            "additionalProperties": false,
+            "properties": {
+              "ref_id": { "type": "string" },
+              "cve": { "type": ["string", "null"] },
+              "similarity": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          },
+          "description": "Offline matches (sha256-exact or imphash-family) against the local LOLDrivers snapshot."
+        },
+        "scope_matches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["scope", "rank"],
+            "additionalProperties": false,
+            "properties": {
+              "scope": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+              "rank": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "description": "Every scope profile whose must_have_one gate fires for this driver, with the import-driven rank (a lower bound: ioctl/method terms need the deep stage). This is the cross-scope triage surface."
+        }
+      }
+    },
+
+    "triage": {
+      "type": "object",
+      "required": ["qualifies", "best_scope", "best_rank"],
+      "additionalProperties": false,
+      "properties": {
+        "qualifies": {
+          "type": "boolean",
+          "description": "True if the driver matched any scope OR had any clone hit — i.e. is worth the deep stage."
+        },
+        "best_scope": { "type": ["string", "null"] },
+        "best_rank": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "detected_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+
+    "pipeline_version": {
+      "type": "string",
+      "pattern": "^v\\d+\\.\\d+\\.\\d+$"
+    }
+  }
+}

@@ -16,6 +16,10 @@ from jinja2 import Template
 
 from .. import __version__ as PIPELINE_VERSION
 from ..collectors import _common as C
+# Rank formula + cross-profile matching live in scoring.py so the cheap L1
+# collection-time pass can reuse them without importing this (Jinja2-heavy)
+# module. Re-exported here to keep bundle.py's public API stable.
+from .scoring import compute_rank, compute_scope_matches  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 REPORTS = REPO_ROOT / "reports"
@@ -86,40 +90,6 @@ def scope_filter(drveye: dict, scope: dict) -> dict:
 
 
 # --- rank calculation (docs/ranking.md: purely additive) ----------------------
-
-def compute_rank(drveye: dict, scope: dict) -> dict:
-    weights = scope.get("rank_weights") or {}
-    imports = {
-        d.get("details", {}).get("function")
-        for d in drveye.get("findings", [])
-        if (d.get("title") or "").startswith("Dangerous import:")
-    }
-    must_have_one = set(
-        (scope.get("imports_of_interest") or {}).get("must_have_one", []) or []
-    )
-    weight_each = set(
-        (scope.get("imports_of_interest") or {}).get("weight_each", []) or []
-    )
-    hits = {
-        "must_have_one": len(imports & must_have_one),
-        "dangerous_imports": len(imports & weight_each),
-        "device_match": 0,
-        "string_match": 0,
-        "ioctl_match": 0,
-        "method_match": 0,
-        "clone_hit": 0,
-    }
-    import re
-    for p in (scope.get("device_name_patterns") or []):
-        if any(re.search(p, n) for n in (drveye.get("device_names") or [])):
-            hits["device_match"] += 1
-    rank = sum(hits[k] * int(weights.get(k, 0)) for k in hits)
-    return {
-        "rank": rank,
-        "hits": hits,
-        "qualifies": hits["must_have_one"] > 0,
-    }
-
 
 # --- device-class classification ---------------------------------------------
 # Rough mapping from DrvEye device_names → the closed vocabulary required by
@@ -367,10 +337,7 @@ def write_bundle(
                 "device_classes": classify_devices(device_names),
                 "interesting_strings": [],
                 "clone_hits": _index_clone_hits(l3_counts.get("clones_items") or []),
-                "scope_matches": (
-                    [{"scope": scope_name, "rank": rank_info["rank"]}]
-                    if rank_info["qualifies"] else []
-                ),
+                "scope_matches": compute_scope_matches(drveye),
             },
             "scope_dependent": {
                 "rank": rank_info["rank"],

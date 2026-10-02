@@ -28,8 +28,13 @@ findings on its own:
 - It reads a single contract ([`AGENTS.md`](AGENTS.md)) that modern agents (Claude
   Code, Codex, Cursor) auto-discover, and that tells it exactly which artifacts to open
   and in what order.
-- It triages the whole corpus from **one index file** (`reports/index.jsonl`) — no
-  walking the bundle tree — then opens only the handful of bundles worth deep analysis.
+- Every collected driver is **fingerprinted as it lands** — a cheap, import-only L1 pass
+  (written to `reports/fingerprints.jsonl`) that runs *during* collection, so the moment a
+  download finishes the whole corpus is already triaged by capability. The expensive engine
+  then runs only on the drivers that fingerprint flagged.
+- It triages the whole corpus from **flat index files** (`reports/fingerprints.jsonl` for the
+  cheap pass, `reports/index.jsonl` for deep analyses) — no walking the bundle tree — then
+  opens only the handful of bundles worth deep analysis.
 - It **runs the pipeline itself**: when it needs pseudo-C for a function it's about to
   cite, it invokes `pipeline.decompile <sha256> <addr>` on demand, materializing the
   decompilation lazily instead of paying to decompile every driver up front.
@@ -62,13 +67,24 @@ docker compose run --rm collect pipeline.collect samlab
 docker compose run --rm collect pipeline.collect msupdate-catalog --scope hid-input-control
 docker compose run --rm collect pipeline.collect msupdate-catalog --scope network
 
-# 2. analyze — static triage of one driver under a scope (network is cut).
-#    Same scope names, applied to ANALYSIS instead of search.
-docker compose run --rm analyze pipeline.analyze <sha256> --scope arbitrary-physical-memory
-#    ...or batch the whole collected corpus (one crash never aborts the run):
-docker compose run --rm analyze pipeline.analyze --all --scope arbitrary-physical-memory --skip-existing
+# 2. fingerprint — the cheap L1 pass. Normally it already ran inside `collect`
+#    as each driver landed; this backfills a corpus gathered earlier, or
+#    recomputes after a reference-file change. Seconds-to-minutes, not hours.
+docker compose run --rm analyze pipeline.fingerprint --all
+#    ...then see what is worth the expensive engine, per scope:
+docker compose run --rm analyze pipeline.fingerprint --select arbitrary-physical-memory
 
-# 3. decompile — materialize pseudo-C for one function, on demand
+# 3. analyze — the EXPENSIVE deep stage (DrvEye). Run it only on the drivers
+#    the L1 fingerprint flagged for this scope — not the whole corpus:
+docker compose run --rm analyze pipeline.analyze --all --scope arbitrary-physical-memory --from-fingerprints --skip-existing
+#    ...one driver by hash:
+docker compose run --rm analyze pipeline.analyze <sha256> --scope arbitrary-physical-memory
+#    ...--deep-all forces the whole corpus (the pre-L1 behavior); --jobs N fans
+#    the batch across N worker processes (default 1). Appends to index.jsonl /
+#    rejected.jsonl are concurrency-safe via O_APPEND.
+docker compose run --rm analyze pipeline.analyze --all --scope arbitrary-physical-memory --deep-all --jobs 8
+
+# 4. decompile — materialize pseudo-C for one function, on demand
 docker compose run --rm analyze pipeline.decompile <sha256> 0x401478
 ```
 
@@ -88,8 +104,9 @@ Open an AI agent at the repo root; it finds [`AGENTS.md`](AGENTS.md) and follows
 contract. Three ways to invoke it:
 
 - **Mass triage** (the common case) — ask a capability question: *"which drivers allow
-  arbitrary physical I/O?"* The agent reads `reports/index.jsonl`, filters, ranks, and
-  only then opens the handful of bundles that matter.
+  arbitrary physical I/O?"* The agent reads the flat index files (`reports/fingerprints.jsonl`
+  for every collected driver, `reports/index.jsonl` for ones already deep-analyzed), filters,
+  ranks, and only then opens the handful of bundles that matter.
 - **Deep analysis** — point it at one bundle (`reports/<sha256>/<run_id>/`). It reads
   the facts, runs `pipeline.decompile` for any function it needs pseudo-C on, and writes
   a cited `findings.json` + `findings.md`.
@@ -101,15 +118,21 @@ contract. Three ways to invoke it:
 ## Scopes
 
 A scope profile tells the pipeline what you're hunting for. The same scope name is
-applied at **two points**:
+applied at **three points**:
 
 - **Search scope** — `pipeline.collect --scope <name>` narrows what the collector
   *looks for*. A profile carries a `search:` block (catalog queries + category
   tokens); `--scope` also accepts a free-text term (`--scope network`, `--scope
   mouse`) used directly as a catalog query, so quick targeted collection needs no
   profile. With no `--scope`, collection is a broad "anything" sweep.
-- **Analysis scope** — `pipeline.analyze --scope <name>` filters which collected
-  drivers go deep and enriches the AI's vocabulary.
+- **Triage scope (L1)** — the cheap fingerprint computes, for *every* driver and
+  *every* profile, whether that driver qualifies and at what import-only rank
+  (`reports/fingerprints.jsonl`). `pipeline.fingerprint --select <name>` reads this
+  to list the drivers worth the deep engine. This stage is scope-*independent* in
+  that it scores all profiles at once, regardless of the search scope used.
+- **Analysis scope (deep)** — `pipeline.analyze --scope <name>` runs the expensive
+  engine (filtered by that profile) and enriches the AI's vocabulary. Pair it with
+  `--from-fingerprints` to analyze only the L1 shortlist for that scope.
 
 Shipped profiles (in [`scope_profiles/`](scope_profiles/)):
 
@@ -124,7 +147,18 @@ Shipped profiles (in [`scope_profiles/`](scope_profiles/)):
 
 ---
 
-## What you get per driver
+## What you get
+
+Corpus-level, flat files the AI triages from without walking the tree:
+
+```
+reports/
+├── fingerprints.jsonl       # cheap L1 pass — one line per driver, written during collection
+├── index.jsonl              # deep analyses — one line per (driver, scope) bundle
+└── rejected.jsonl           # L0 rejections, separate stream
+```
+
+Per driver (deep stage only):
 
 ```
 reports/<sha256>/
@@ -159,10 +193,12 @@ disposable isolated VM.
 
 ## How it works
 
-DrvEye is the L0→L3+ engine (see the note at the top); this project owns the
-Microsoft Update Catalog collector that feeds it and the adapter that reshapes its
-JSON into the AI-handoff bundle (scope profiles, per-bundle `AGENTS.md`, the
-`index.jsonl` triage index, cited `findings.json`).
+DrvEye is the deep L2→L3+ engine (see the note at the top); this project owns the
+Microsoft Update Catalog collector that feeds it, the cheap **L0 gate + L1 fingerprint**
+that run before it (import-only triage over the whole corpus, fused into collection), and
+the adapter that reshapes DrvEye's JSON into the AI-handoff bundle (scope profiles,
+per-bundle `AGENTS.md`, the `fingerprints.jsonl` / `index.jsonl` triage indexes, cited
+`findings.json`).
 
 The full rationale, the layered L0→L3+ methodology, the collection design, and the
 implementation status live in **[docs/DESIGN.md](docs/DESIGN.md)**. The earlier
