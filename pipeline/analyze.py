@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from . import collectors as _c  # noqa: F401 — ensures config paths resolve
@@ -104,7 +105,17 @@ def main(argv: list[str] | None = None) -> int:
                          "(reject binaries with no Authenticode)")
     ap.add_argument("--skip-existing", action="store_true",
                     help="skip drivers that already have a bundle for this scope")
+    ap.add_argument("--sha-list", type=Path, default=None,
+                    help="path to a file of sha256-per-line; restricts --all "
+                         "to that subset (used by shard-parallel runners). "
+                         "Ignored unless --all is set.")
+    ap.add_argument("--jobs", "-j", type=int, default=1, metavar="N",
+                    help="run N drivers in parallel inside this container "
+                         "(default: 1 = sequential). Writes to index.jsonl / "
+                         "rejected.jsonl are concurrency-safe via O_APPEND.")
     args = ap.parse_args(argv)
+    if args.jobs < 1:
+        ap.error("--jobs must be >= 1")
 
     if args.all == bool(args.spec):
         ap.error("provide either a driver spec or --all (not both, not neither)")
@@ -117,6 +128,16 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
         work = [(p.stem, p) for p in drivers]
+        if args.sha_list is not None:
+            if not args.sha_list.is_file():
+                print(f"error: --sha-list file not found: {args.sha_list}", file=sys.stderr)
+                return 2
+            wanted = {ln.strip() for ln in args.sha_list.read_text(encoding="utf-8").splitlines()
+                      if ln.strip() and not ln.startswith("#")}
+            before = len(work)
+            work = [(s, p) for (s, p) in work if s in wanted]
+            print(f"[analyze] shard filter: {before} -> {len(work)} drivers "
+                  f"(sha-list={args.sha_list})")
     else:
         try:
             work = [_resolve_sys(args.spec)]
@@ -125,18 +146,19 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     analyzed = rejected = errors = skipped = 0
+
+    # Pre-filter the already-analyzed drivers up front. Cheap (dir glob) and
+    # keeps the pool from spawning no-op workers.
+    todo: list[tuple[str, Path]] = []
     for sha, path in work:
         if args.skip_existing and _already_analyzed(sha, args.scope):
             skipped += 1
             print(f"[analyze] SKIP {sha[:16]}... (bundle for {args.scope} exists)")
-            continue
-        try:
-            res = analyze_one(sha, path, args.scope, args.signature)
-        except Exception as e:  # engine crash / timeout — isolate in batch
-            errors += 1
-            print(f"[analyze] ERROR {sha[:16]}...: {type(e).__name__}: {e}",
-                  file=sys.stderr)
-            continue
+        else:
+            todo.append((sha, path))
+
+    def _emit(sha: str, res: dict) -> None:
+        nonlocal analyzed, rejected
         if res["status"] == "rejected":
             rejected += 1
             print(f"[analyze] REJECTED {sha[:16]}... reason={res['reason']}: "
@@ -145,6 +167,38 @@ def main(argv: list[str] | None = None) -> int:
             analyzed += 1
             print(f"[analyze] OK {sha[:16]}... rank={res['rank']} "
                   f"bundle={res['bundle']}")
+
+    if args.jobs == 1 or len(todo) <= 1:
+        for sha, path in todo:
+            try:
+                res = analyze_one(sha, path, args.scope, args.signature)
+            except Exception as e:  # engine crash / timeout — isolate in batch
+                errors += 1
+                print(f"[analyze] ERROR {sha[:16]}...: {type(e).__name__}: {e}",
+                      file=sys.stderr)
+                continue
+            _emit(sha, res)
+    else:
+        # Parallel: ProcessPoolExecutor fans analyze_one() out across N worker
+        # processes in this one container. Each worker is a Python subprocess
+        # under the same mounts and same scope, writing to the same
+        # index.jsonl / rejected.jsonl (safe thanks to the O_APPEND
+        # append_index / append_rejected). Fork on Linux keeps startup cheap.
+        print(f"[analyze] parallel: {len(todo)} drivers across {args.jobs} workers")
+        with ProcessPoolExecutor(max_workers=args.jobs) as pool:
+            futures = {pool.submit(analyze_one, sha, path, args.scope,
+                                   args.signature): sha
+                       for sha, path in todo}
+            for fut in as_completed(futures):
+                sha = futures[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    errors += 1
+                    print(f"[analyze] ERROR {sha[:16]}...: "
+                          f"{type(e).__name__}: {e}", file=sys.stderr)
+                    continue
+                _emit(sha, res)
 
     if args.all or skipped:
         print(f"[analyze] done: analyzed={analyzed} rejected={rejected} "

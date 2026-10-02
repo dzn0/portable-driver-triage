@@ -21,6 +21,10 @@ x-pdt-common: &pdt-common
   volumes:
     - ./pipeline_out:/work/pipeline_out
     - ./reports:/work/reports
+    # Overlay the pipeline package from host so iteration doesn't need a
+    # rebuild. The image still carries a baked copy under /work/pipeline;
+    # this mount shadows it. Remove the line if you want the image's copy.
+    - ./pipeline:/work/pipeline
 
 services:
   # Networked stage: discovery + download from vendors / LOLDrivers.

@@ -8,7 +8,6 @@ AGENTS.md. Also emits one conforming row for reports/index.jsonl.
 from __future__ import annotations
 import json
 import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -397,25 +396,30 @@ def write_bundle(
 # --- atomic append to reports/index.jsonl ------------------------------------
 
 def append_index(row: dict) -> None:
-    """Crash-safe append: write to tempfile then os.replace into place."""
+    """Concurrent-safe append.
+
+    POSIX guarantees atomicity for writes <PIPE_BUF (4096) to a single fd
+    opened with O_APPEND, even across processes. Index rows are JSON lines
+    well under that, so a direct open-append-close is race-free on Linux
+    (what the Docker container runs). We assert the line length to turn a
+    silent interleave into a loud failure if a future row grows past the
+    limit.
+
+    On Windows an append fd is also effectively atomic for small writes, so
+    the same path is used — rebuild from the raw bundles if a corruption is
+    ever observed there.
+    """
     REPORTS.mkdir(parents=True, exist_ok=True)
     target = REPORTS / "index.jsonl"
-    line = json.dumps(row, ensure_ascii=False) + "\n"
-    # Append is atomic for ≤PIPE_BUF-sized writes on POSIX; on Windows we
-    # simulate via copy-to-temp then rename, keyed by (sha256, scope).
-    existing = target.read_text(encoding="utf-8") if target.exists() else ""
-    tmp = tempfile.NamedTemporaryFile(
-        "w", delete=False, dir=str(REPORTS), suffix=".jsonl.tmp",
-        encoding="utf-8", newline="",
+    data = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+    assert len(data) < 4096, (
+        f"index row {len(data)} bytes exceeds PIPE_BUF atomic-append guarantee"
     )
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
-        tmp.write(existing)
-        tmp.write(line)
-        tmp.flush()
-        os.fsync(tmp.fileno())
+        os.write(fd, data)
     finally:
-        tmp.close()
-    os.replace(tmp.name, target)
+        os.close(fd)
 
 
 # --- markdown helpers ---------------------------------------------------------

@@ -12,7 +12,6 @@ parse plus a handful of header reads. Reasons are the closed vocabulary from
 from __future__ import annotations
 import json
 import os
-import tempfile
 from pathlib import Path
 
 import pefile
@@ -164,22 +163,24 @@ def build_rejected_row(sha256: str, verdict: _Verdict, *,
 
 
 def append_rejected(row: dict) -> None:
-    """Crash-safe append to reports/rejected.jsonl (temp + os.replace)."""
+    """Concurrent-safe append to reports/rejected.jsonl.
+
+    POSIX guarantees atomicity for writes <PIPE_BUF (4096) to a single fd
+    opened with O_APPEND, even across processes. Mirrors the same guarantee
+    bundle.append_index relies on, closing the "needs a lock for parallel
+    analysis" caveat called out in docs/DESIGN.md Pending §3.
+    """
     REPORTS.mkdir(parents=True, exist_ok=True)
     target = REPORTS / "rejected.jsonl"
-    line = json.dumps(row, ensure_ascii=False) + "\n"
-    existing = target.read_text(encoding="utf-8") if target.exists() else ""
-    tmp = tempfile.NamedTemporaryFile(
-        "w", delete=False, dir=str(REPORTS), suffix=".jsonl.tmp",
-        encoding="utf-8", newline="")
+    data = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+    assert len(data) < 4096, (
+        f"rejected row {len(data)} bytes exceeds PIPE_BUF atomic-append guarantee"
+    )
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
-        tmp.write(existing)
-        tmp.write(line)
-        tmp.flush()
-        os.fsync(tmp.fileno())
+        os.write(fd, data)
     finally:
-        tmp.close()
-    os.replace(tmp.name, target)
+        os.close(fd)
 
 
 def _rel(path: Path) -> str:
